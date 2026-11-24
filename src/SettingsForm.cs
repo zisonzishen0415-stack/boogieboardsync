@@ -10,6 +10,7 @@ namespace BoogieBoardSync
         private readonly TrayContext owner;
         private bool loading;
         private Label statusLabel;
+        private Label detailLabel;
         private ComboBox connectionCombo;
         private RadioButton penRadio;
         private RadioButton mouseRadio;
@@ -29,13 +30,13 @@ namespace BoogieBoardSync
         public SettingsForm(TrayContext owner)
         {
             this.owner = owner;
-            Text = "BoogieBoardSync 设置";
+            Text = AppInfo.DisplayName + " 设置";
             Font = new Font("Microsoft YaHei UI", 9F, FontStyle.Regular, GraphicsUnit.Point);
             AutoScaleMode = AutoScaleMode.Dpi;
-            ClientSize = new Size(640, 820);
-            MinimumSize = new Size(640, 820);
-            FormBorderStyle = FormBorderStyle.FixedDialog;
-            MaximizeBox = false;
+            ClientSize = new Size(680, 860);
+            MinimumSize = new Size(640, 620);
+            FormBorderStyle = FormBorderStyle.Sizable;
+            MaximizeBox = true;
             MinimizeBox = false;
             StartPosition = FormStartPosition.CenterScreen;
             ShowInTaskbar = true;
@@ -129,6 +130,11 @@ namespace BoogieBoardSync
             statusLabel.AutoSize = true;
             statusLabel.Font = new Font(Font, FontStyle.Bold);
             AddRow(inputTable, "当前状态", statusLabel);
+
+            detailLabel = new Label();
+            detailLabel.AutoSize = true;
+            detailLabel.ForeColor = Color.DimGray;
+            AddWideRow(inputTable, detailLabel);
 
             Label liveHint = new Label();
             liveHint.Text = "所有修改会立即生效，不需要保存按钮。";
@@ -248,6 +254,15 @@ namespace BoogieBoardSync
             hint.ForeColor = Color.DimGray;
             hint.Margin = new Padding(0, 8, 0, 2);
             AddWideRow(pressureTable, hint);
+            FlowLayoutPanel pressureButtons = new FlowLayoutPanel();
+            pressureButtons.AutoSize = true;
+            pressureButtons.WrapContents = false;
+            pressureButtons.Margin = new Padding(0, 8, 0, 0);
+            Button resetButton = MakeButton("恢复默认力度");
+            resetButton.Click += delegate(object sender, EventArgs e) { ResetPressure(); };
+            pressureButtons.Controls.Add(resetButton);
+            AddWideRow(pressureTable, pressureButtons);
+
             pressureGroup.Controls.Add(pressureTable);
             root.Controls.Add(pressureGroup);
 
@@ -266,15 +281,28 @@ namespace BoogieBoardSync
             };
             AddWideRow(startupTable, autoStartCheck);
 
-            FlowLayoutPanel buttonFlow = new FlowLayoutPanel();
-            buttonFlow.AutoSize = true;
-            buttonFlow.WrapContents = false;
-            buttonFlow.Margin = new Padding(0, 8, 0, 0);
-            Button resetButton = MakeButton("恢复默认力度");
-            resetButton.Click += delegate(object sender, EventArgs e) { ResetPressure(); };
+            startupGroup.Controls.Add(startupTable);
+            root.Controls.Add(startupGroup);
+
+            GroupBox recoveryGroup = MakeGroup("诊断与恢复");
+            FlowLayoutPanel recoveryFlow = new FlowLayoutPanel();
+            recoveryFlow.AutoSize = true;
+            recoveryFlow.WrapContents = true;
+            recoveryFlow.MaximumSize = new Size(540, 0);
+            recoveryFlow.Margin = new Padding(0);
+
+            Button reconnectButton = MakeButton("重新连接");
+            reconnectButton.Click += delegate(object sender, EventArgs e)
+            {
+                AppLog.Write("manual reconnect requested from settings window");
+                Program.RequestTransportRefresh();
+            };
+            Button diagnosticsButton = MakeButton("诊断信息…");
+            diagnosticsButton.Click += delegate(object sender, EventArgs e) { owner.ShowDiagnostics(); };
+            Button logButton = MakeButton("打开日志");
+            logButton.Click += delegate(object sender, EventArgs e) { owner.OpenLogFile(); };
             Button folderButton = MakeButton("打开设置文件夹");
             folderButton.Click += delegate(object sender, EventArgs e) { owner.OpenSettingsFolder(); };
-            buttonFlow.Controls.Add(resetButton);
             Button bluetoothButton = MakeButton("打开蓝牙设置");
             bluetoothButton.Click += delegate(object sender, EventArgs e)
             {
@@ -286,11 +314,21 @@ namespace BoogieBoardSync
                 {
                 }
             };
-            buttonFlow.Controls.Add(bluetoothButton);
-            buttonFlow.Controls.Add(folderButton);
-            AddWideRow(startupTable, buttonFlow);
-            startupGroup.Controls.Add(startupTable);
-            root.Controls.Add(startupGroup);
+
+            recoveryFlow.Controls.Add(reconnectButton);
+            recoveryFlow.Controls.Add(diagnosticsButton);
+            recoveryFlow.Controls.Add(logButton);
+            recoveryFlow.Controls.Add(folderButton);
+            recoveryFlow.Controls.Add(bluetoothButton);
+            recoveryGroup.Controls.Add(recoveryFlow);
+            root.Controls.Add(recoveryGroup);
+
+            Label versionHint = new Label();
+            versionHint.Text = AppInfo.DisplayName + " · USB HID + 经典蓝牙 RFCOMM · 日志自动轮转到 1 MB";
+            versionHint.AutoSize = true;
+            versionHint.ForeColor = Color.DimGray;
+            versionHint.Margin = new Padding(4, 8, 0, 2);
+            root.Controls.Add(versionHint);
 
             Label hotkeyHint = new Label();
             hotkeyHint.Text = "全局热键：Ctrl+Alt+S 设置 / P 暂停 / M 模式 / R 旋转";
@@ -546,7 +584,32 @@ namespace BoogieBoardSync
                 link,
                 runtime.Rotate,
                 runtime.PressureGamma);
-            statusLabel.ForeColor = runtime.Paused ? Color.Firebrick : Color.SeaGreen;
+            statusLabel.ForeColor = runtime.Paused
+                ? Color.Firebrick
+                : (string.IsNullOrEmpty(runtime.ActiveLink) ? Color.DarkOrange : Color.SeaGreen);
+            if (detailLabel != null)
+            {
+                detailLabel.Text = string.Format(
+                    CultureInfo.InvariantCulture,
+                    "最近输入 {0}    力度 {1} → {2}    {3}",
+                    FormatInputAge(runtime.LastInputAgeMs),
+                    runtime.LastRawPressure,
+                    runtime.LastMappedPressure,
+                    runtime.MouseMode ? "侧键 = 右键" : "侧键 = 笔按钮");
+            }
+        }
+
+        private static string FormatInputAge(int ageMs)
+        {
+            if (ageMs == int.MaxValue)
+            {
+                return "尚无";
+            }
+            if (ageMs < 1000)
+            {
+                return ageMs + " ms 前";
+            }
+            return string.Format(CultureInfo.InvariantCulture, "{0:0.0} 秒前", ageMs / 1000.0);
         }
 
         private void SelectCurveIndex(double gamma)

@@ -293,6 +293,14 @@ namespace BoogieBoardSync
             }
         }
 
+        public void RefreshMapping()
+        {
+            lock (sync)
+            {
+                RebuildLocked();
+            }
+        }
+
         public void SetPressurePreset(double gamma)
         {
             lock (sync)

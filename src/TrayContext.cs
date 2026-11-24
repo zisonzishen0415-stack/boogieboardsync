@@ -1,9 +1,13 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Drawing;
 using System.Globalization;
+using System.Text;
 using System.Threading;
+using System.Threading.Tasks;
 using System.Windows.Forms;
+using Microsoft.Win32;
 
 namespace BoogieBoardSync
 {
@@ -26,8 +30,14 @@ namespace BoogieBoardSync
         private readonly List<ToolStripMenuItem> curveItems = new List<ToolStripMenuItem>();
         private readonly List<ToolStripMenuItem> connectionItems = new List<ToolStripMenuItem>();
         private SettingsForm settingsForm;
+        private DiagnosticsForm diagnosticsForm;
         private System.Windows.Forms.Timer statusTimer;
+        private System.Windows.Forms.Timer startupShowTimer;
+        private volatile bool mappingRefreshPending;
         private bool shuttingDown;
+        private readonly object diagnosticsSync = new object();
+        private Task<string> bluetoothDiagnosticsTask;
+        private DateTime bluetoothDiagnosticsUtc = DateTime.MinValue;
 
         public TrayContext(Options options)
         {
@@ -70,8 +80,20 @@ namespace BoogieBoardSync
             menu.Items.Add(connectionMenu);
 
             ToolStripMenuItem reconnectItem = new ToolStripMenuItem("重新连接");
-            reconnectItem.Click += delegate(object sender, EventArgs e) { Program.RequestTransportRefresh(); };
+            reconnectItem.Click += delegate(object sender, EventArgs e)
+            {
+                AppLog.Write("manual reconnect requested from tray");
+                Program.RequestTransportRefresh();
+            };
             menu.Items.Add(reconnectItem);
+
+            ToolStripMenuItem diagnosticsItem = new ToolStripMenuItem("诊断信息…");
+            diagnosticsItem.Click += delegate(object sender, EventArgs e) { ShowDiagnostics(); };
+            menu.Items.Add(diagnosticsItem);
+
+            ToolStripMenuItem logItem = new ToolStripMenuItem("打开日志");
+            logItem.Click += delegate(object sender, EventArgs e) { OpenLogFile(); };
+            menu.Items.Add(logItem);
 
             menu.Items.Add(new ToolStripSeparator());
 
@@ -135,6 +157,23 @@ namespace BoogieBoardSync
 
             menu.Items.Add(new ToolStripSeparator());
 
+            ToolStripMenuItem aboutItem = new ToolStripMenuItem("关于 " + AppInfo.DisplayName);
+            aboutItem.Click += delegate(object sender, EventArgs e)
+            {
+                MessageBox.Show(
+                    AppInfo.DisplayName + Environment.NewLine + Environment.NewLine +
+                    "Boogie Board Sync 用户态笔驱动" + Environment.NewLine +
+                    "USB HID 与经典蓝牙 RFCOMM" + Environment.NewLine + Environment.NewLine +
+                    "配置文件：" + SettingsStore.FolderPath + Environment.NewLine +
+                    "日志文件：" + AppLog.FilePath,
+                    AppInfo.DisplayName,
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Information);
+            };
+            menu.Items.Add(aboutItem);
+
+            menu.Items.Add(new ToolStripSeparator());
+
             ToolStripMenuItem exitItem = new ToolStripMenuItem("退出");
             exitItem.Click += delegate(object sender, EventArgs e) { ExitApplication(); };
             menu.Items.Add(exitItem);
@@ -154,9 +193,30 @@ namespace BoogieBoardSync
 
             statusTimer = new System.Windows.Forms.Timer();
             statusTimer.Interval = 1000;
-            statusTimer.Tick += delegate(object sender, EventArgs e) { EnsureDriverThread(); UpdateUi(); };
+            statusTimer.Tick += delegate(object sender, EventArgs e)
+            {
+                EnsureDriverThread();
+                RefreshPendingMapping();
+                UpdateUi();
+            };
             statusTimer.Start();
+            SystemEvents.PowerModeChanged += OnPowerModeChanged;
+            SystemEvents.SessionSwitch += OnSessionSwitch;
+            SystemEvents.DisplaySettingsChanged += OnDisplaySettingsChanged;
             AppLog.Write("tray started");
+            if (options.ShowSettings)
+            {
+                startupShowTimer = new System.Windows.Forms.Timer();
+                startupShowTimer.Interval = 350;
+                startupShowTimer.Tick += delegate(object sender, EventArgs e)
+                {
+                    startupShowTimer.Stop();
+                    startupShowTimer.Dispose();
+                    startupShowTimer = null;
+                    ShowSettings();
+                };
+                startupShowTimer.Start();
+            }
         }
 
         private void StartDriverThread()
@@ -444,6 +504,271 @@ namespace BoogieBoardSync
             }
         }
 
+        internal void ShowDiagnostics()
+        {
+            if (diagnosticsForm == null || diagnosticsForm.IsDisposed)
+            {
+                diagnosticsForm = new DiagnosticsForm(this);
+            }
+            if (!diagnosticsForm.Visible)
+            {
+                diagnosticsForm.Show();
+            }
+            diagnosticsForm.Activate();
+            diagnosticsForm.BringToFront();
+        }
+
+
+        internal void OpenLogFile()
+        {
+            try
+            {
+                AppLog.Write("log opened from tray");
+                ProcessStartInfo start = new ProcessStartInfo(AppLog.FilePath);
+                start.UseShellExecute = true;
+                Process.Start(start);
+            }
+            catch (Exception ex)
+            {
+                AppLog.Write("open log failed: " + ex.Message);
+                try
+                {
+                    Process.Start("notepad.exe", AppLog.FilePath);
+                }
+                catch (Exception inner)
+                {
+                    MessageBox.Show(
+                        "无法打开日志：" + inner.Message + Environment.NewLine + AppLog.FilePath,
+                        AppInfo.DisplayName,
+                        MessageBoxButtons.OK,
+                        MessageBoxIcon.Error);
+                }
+            }
+        }
+
+        internal string BuildDiagnostics()
+        {
+            StringBuilder text = new StringBuilder();
+            text.AppendLine(AppInfo.DisplayName + " 诊断信息");
+            text.AppendLine("生成时间: " + DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"));
+            text.AppendLine("Windows: " + GetWindowsDescription());
+            text.AppendLine("系统架构: " + (Environment.Is64BitOperatingSystem ? "x64" : "x86"));
+            text.AppendLine("程序架构: " + (Environment.Is64BitProcess ? "x64" : "x86"));
+            text.AppendLine("程序路径: " + Application.ExecutablePath);
+            text.AppendLine("配置目录: " + SettingsStore.FolderPath);
+            text.AppendLine("日志文件: " + AppLog.FilePath);
+            text.AppendLine();
+
+            text.AppendLine("[运行状态]");
+            text.AppendLine("连接方式: " + runtime.ConnectionMode);
+            text.AppendLine("当前链路: " + (string.IsNullOrEmpty(runtime.ActiveLink) ? "未连接" : runtime.ActiveLink));
+            text.AppendLine("输入模式: " + (runtime.MouseMode ? "鼠标" : "Windows Ink 数位板"));
+            text.AppendLine("暂停: " + (runtime.Paused ? "是" : "否"));
+            text.AppendLine("旋转: " + runtime.Rotate + "°");
+            text.AppendLine("屏幕: " + (runtime.ScreenIndex < 0 ? "全部屏幕" : "显示器 " + (runtime.ScreenIndex + 1)));
+            text.AppendLine(string.Format(
+                "力度: 原始 {0}-{1}, gamma {2:0.00}, 死区 {3:0.00}, 平滑 {4:0.00}",
+                runtime.PressureMin,
+                runtime.PressureMax,
+                runtime.PressureGamma,
+                runtime.PressureDeadzone,
+                runtime.PressureSmoothing));
+            text.AppendLine(string.Format(
+                "最近输入: {0}; 原始力度 {1} -> 输出 {2}; touch={3} hover={4}",
+                FormatInputAge(runtime.LastInputAgeMs),
+                runtime.LastRawPressure,
+                runtime.LastMappedPressure,
+                runtime.LastTouch,
+                runtime.LastHover));
+            text.AppendLine();
+
+            text.AppendLine("[USB HID]");
+            try
+            {
+                HidDevice[] usbDevices = HidDevice.FindAll(HidDevice.BoogieVendorId, HidDevice.BoogieProductId);
+                if (usbDevices.Length == 0)
+                {
+                    text.AppendLine("未发现 VID_2914 PID_0100（未插线或固件未枚举）。");
+                }
+                else
+                {
+                    for (int i = 0; i < usbDevices.Length; i++)
+                    {
+                        text.AppendLine(usbDevices[i].ToString());
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                text.AppendLine("USB 枚举失败: " + ex.Message);
+            }
+            text.AppendLine();
+
+            text.AppendLine("[蓝牙]");
+            text.AppendLine(GetBluetoothDiagnosticsText());
+            text.AppendLine();
+
+            text.AppendLine("[最近日志]");
+            text.Append(AppLog.ReadTail(16000));
+            return text.ToString();
+        }
+
+        private string GetBluetoothDiagnosticsText()
+        {
+            Task<string> task;
+            lock (diagnosticsSync)
+            {
+                bool expired = bluetoothDiagnosticsTask != null &&
+                    bluetoothDiagnosticsTask.IsCompleted &&
+                    (DateTime.UtcNow - bluetoothDiagnosticsUtc).TotalSeconds >= 20.0;
+                if (bluetoothDiagnosticsTask == null ||
+                    bluetoothDiagnosticsTask.IsFaulted ||
+                    bluetoothDiagnosticsTask.IsCanceled ||
+                    expired)
+                {
+                    bluetoothDiagnosticsUtc = DateTime.UtcNow;
+                    bluetoothDiagnosticsTask = Task.Factory.StartNew<string>(delegate() { return BuildBluetoothDiagnosticsText(); });
+                }
+                task = bluetoothDiagnosticsTask;
+            }
+
+            try
+            {
+                if (!task.Wait(5000))
+                {
+                    return "蓝牙枚举超时（系统蓝牙栈可能正忙）；数据会在后台继续查询，稍后刷新即可。";
+                }
+                return task.Result;
+            }
+            catch (AggregateException ex)
+            {
+                Exception inner = ex.InnerException == null ? ex : ex.InnerException;
+                return "蓝牙枚举失败: " + inner.Message;
+            }
+        }
+
+        private static string BuildBluetoothDiagnosticsText()
+        {
+            StringBuilder text = new StringBuilder();
+            try
+            {
+                BluetoothDeviceInfo[] devices = BluetoothDiscovery.FindDevices(false);
+                if (devices.Length == 0)
+                {
+                    text.AppendLine("未发现已配对/已连接的蓝牙设备。");
+                }
+                else
+                {
+                    for (int i = 0; i < devices.Length; i++)
+                    {
+                        BluetoothDeviceInfo device = devices[i];
+                        text.AppendLine(device.ToString() + (device.IsLikelyBoogie ? "  [likely Boogie]" : ""));
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                text.AppendLine("蓝牙枚举失败: " + ex.Message);
+            }
+            return text.ToString().TrimEnd();
+        }
+
+        private static string GetWindowsDescription()
+        {
+            try
+            {
+                using (RegistryKey key = Registry.LocalMachine.OpenSubKey(
+                    @"SOFTWARE\Microsoft\Windows NT\CurrentVersion", false))
+                {
+                    if (key != null)
+                    {
+                        string product = key.GetValue("ProductName") as string;
+                        string display = key.GetValue("DisplayVersion") as string;
+                        string buildText = key.GetValue("CurrentBuildNumber") as string;
+                        object ubrValue = key.GetValue("UBR");
+                        int buildNumber = 0;
+                        int.TryParse(buildText, out buildNumber);
+                        if (buildNumber >= 22000 && !string.IsNullOrEmpty(product))
+                        {
+                            product = product.Replace("Windows 10", "Windows 11");
+                        }
+                        string ubr = ubrValue == null ? "" : "." + ubrValue;
+                        return string.Format(
+                            CultureInfo.InvariantCulture,
+                            "{0} {1} (build {2}{3})",
+                            product,
+                            display,
+                            buildText,
+                            ubr).Trim();
+                    }
+                }
+            }
+            catch (Exception)
+            {
+            }
+            return Environment.OSVersion.VersionString;
+        }
+
+        private static string FormatInputAge(int ageMs)
+        {
+            if (ageMs == int.MaxValue)
+            {
+                return "尚无输入";
+            }
+            if (ageMs < 1000)
+            {
+                return ageMs + " ms 前";
+            }
+            return string.Format(CultureInfo.InvariantCulture, "{0:0.0} 秒前", ageMs / 1000.0);
+        }
+
+        private void OnPowerModeChanged(object sender, PowerModeChangedEventArgs e)
+        {
+            if (e.Mode != PowerModes.Resume)
+            {
+                return;
+            }
+            AppLog.Write("system resumed; refreshing transport");
+            mappingRefreshPending = true;
+            Program.RequestTransportRefresh();
+        }
+
+        private void OnSessionSwitch(object sender, SessionSwitchEventArgs e)
+        {
+            if (e.Reason != SessionSwitchReason.SessionUnlock)
+            {
+                return;
+            }
+            AppLog.Write("session unlocked; refreshing transport");
+            mappingRefreshPending = true;
+            Program.RequestTransportRefresh();
+        }
+
+        private void OnDisplaySettingsChanged(object sender, EventArgs e)
+        {
+            mappingRefreshPending = true;
+            AppLog.Write("display settings changed; mapping refresh queued");
+        }
+
+        private void RefreshPendingMapping()
+        {
+            if (!mappingRefreshPending)
+            {
+                return;
+            }
+            mappingRefreshPending = false;
+            try
+            {
+                runtime.RefreshMapping();
+                AppLog.Write("display mapping refreshed");
+                UpdateUi();
+            }
+            catch (Exception ex)
+            {
+                AppLog.Write("display mapping refresh failed: " + ex.Message);
+            }
+        }
+
         private void ExitApplication()
         {
             Shutdown();
@@ -458,6 +783,15 @@ namespace BoogieBoardSync
             }
             shuttingDown = true;
             AppLog.Write("tray stopping");
+            try
+            {
+                SystemEvents.PowerModeChanged -= OnPowerModeChanged;
+                SystemEvents.SessionSwitch -= OnSessionSwitch;
+                SystemEvents.DisplaySettingsChanged -= OnDisplaySettingsChanged;
+            }
+            catch (Exception)
+            {
+            }
             Program.RequestStop();
             if (driverThread != null)
             {
@@ -476,6 +810,18 @@ namespace BoogieBoardSync
             {
                 icon.Visible = false;
                 icon.Dispose();
+            }
+            if (startupShowTimer != null)
+            {
+                startupShowTimer.Stop();
+                startupShowTimer.Dispose();
+                startupShowTimer = null;
+            }
+            if (diagnosticsForm != null)
+            {
+                diagnosticsForm.Hide();
+                diagnosticsForm.Dispose();
+                diagnosticsForm = null;
             }
             if (settingsForm != null)
             {

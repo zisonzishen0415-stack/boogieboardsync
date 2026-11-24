@@ -42,6 +42,8 @@ namespace BoogieBoardSync
         public bool Debug;
         public bool Help;
         public bool Tray;
+        public bool ShowSettings;
+        public bool ShowVersion;
         public bool NoTabletMode;
         public int Rotate;
         public bool FlipX;
@@ -80,6 +82,14 @@ namespace BoogieBoardSync
                 else if (arg == "--pointer-watch")
                 {
                     options.PointerWatch = true;
+                }
+                else if (arg == "--show-settings")
+                {
+                    options.ShowSettings = true;
+                }
+                else if (arg == "--version" || arg == "-v")
+                {
+                    options.ShowVersion = true;
                 }
                 else if (arg == "--diag")
                 {
@@ -388,6 +398,7 @@ namespace BoogieBoardSync
             }
         }
 
+        [STAThread]
         public static int Main(string[] args)
         {
             Options options;
@@ -406,6 +417,17 @@ namespace BoogieBoardSync
             {
                 PrintUsage();
                 return 0;
+            }
+
+            if (options.ShowVersion)
+            {
+                Console.WriteLine(AppInfo.DisplayName);
+                return 0;
+            }
+
+            if (options.Tray || options.ShowSettings)
+            {
+                return TrayProgram.Main(args);
             }
 
             EnableDpiAwareness();
@@ -2296,7 +2318,7 @@ namespace BoogieBoardSync
 
         private static void PrintUsage()
         {
-            Console.WriteLine("BoogieBoardSync user-space pen driver for Windows");
+            Console.WriteLine(AppInfo.DisplayName + " - user-space pen driver for Windows");
             Console.WriteLine("");
             Console.WriteLine("Usage: BoogieBoardSync.exe [options]");
             Console.WriteLine("");
@@ -2341,6 +2363,9 @@ namespace BoogieBoardSync
             Console.WriteLine("  --bt-address=ADDR       Bluetooth address, for example AA:BB:CC:DD:EE:FF");
             Console.WriteLine("  --bt-name=NAME          Bluetooth name filter, default Boogie/Improv/Sync auto-detect");
             Console.WriteLine("  --bt-channel=N          RFCOMM channel override; default auto-detect (Sync streaming is channel 3)");
+            Console.WriteLine("  --show-settings         Open the tray settings window at startup");
+            Console.WriteLine("  --tray                  Start the tray application");
+            Console.WriteLine("  --version               Show the program version");
             Console.WriteLine("  --help                  Show this help");
             Console.WriteLine("");
             Console.WriteLine("Examples:");

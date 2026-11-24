@@ -18,7 +18,11 @@ namespace BoogieBoardSync
                 }
                 Thread.Sleep(100);
             }
-            return false;
+
+            IntPtr broadcast = new IntPtr(0xFFFF);
+            NativeMethods.PostMessage(broadcast, NativeMethods.WM_SHOW_SETTINGS, IntPtr.Zero, IntPtr.Zero);
+            Thread.Sleep(250);
+            return NativeMethods.FindWindow(null, "BoogieBoardSyncHotkeys") != IntPtr.Zero;
         }
 
         [STAThread]
@@ -32,8 +36,9 @@ namespace BoogieBoardSync
                     if (!ShowExistingSettings())
                     {
                         MessageBox.Show(
-                            "BoogieBoardSync 托盘程序已经在运行，但没有找到设置窗口。",
-                            "BoogieBoardSync",
+                            AppInfo.DisplayName + " 托盘程序已经在运行，但设置窗口暂时无法唤醒。" + Environment.NewLine +
+                            "请右键单击系统托盘中的程序图标，选择“打开设置窗口”，或者按 Ctrl+Alt+S。",
+                            AppInfo.DisplayName,
                             MessageBoxButtons.OK,
                             MessageBoxIcon.Information);
                     }
