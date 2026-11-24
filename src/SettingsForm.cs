@@ -10,6 +10,7 @@ namespace BoogieBoardSync
         private readonly TrayContext owner;
         private bool loading;
         private Label statusLabel;
+        private ComboBox connectionCombo;
         private RadioButton penRadio;
         private RadioButton mouseRadio;
         private CheckBox pausedCheck;
@@ -91,6 +92,15 @@ namespace BoogieBoardSync
 
             GroupBox inputGroup = MakeGroup("输入状态");
             TableLayoutPanel inputTable = MakeTable();
+
+            connectionCombo = new ComboBox();
+            connectionCombo.DropDownStyle = ComboBoxStyle.DropDownList;
+            connectionCombo.Items.Add("自动（USB 优先）");
+            connectionCombo.Items.Add("仅 USB");
+            connectionCombo.Items.Add("仅蓝牙");
+            connectionCombo.SelectedIndex = 0;
+            connectionCombo.SelectedIndexChanged += delegate(object sender, EventArgs e) { ApplyFromControls(); };
+            AddRow(inputTable, "连接方式", connectionCombo);
             FlowLayoutPanel modeFlow = new FlowLayoutPanel();
             modeFlow.AutoSize = true;
             modeFlow.WrapContents = false;
@@ -125,6 +135,12 @@ namespace BoogieBoardSync
             liveHint.AutoSize = true;
             liveHint.ForeColor = Color.DimGray;
             AddWideRow(inputTable, liveHint);
+
+            Label bluetoothHint = new Label();
+            bluetoothHint.Text = "蓝牙需要先在 Windows 设置中配对；程序会自动识别名称含 Boogie / Improv / Sync 的设备。";
+            bluetoothHint.AutoSize = true;
+            bluetoothHint.ForeColor = Color.DimGray;
+            AddWideRow(inputTable, bluetoothHint);
             inputGroup.Controls.Add(inputTable);
             root.Controls.Add(inputGroup);
 
@@ -259,6 +275,18 @@ namespace BoogieBoardSync
             Button folderButton = MakeButton("打开设置文件夹");
             folderButton.Click += delegate(object sender, EventArgs e) { owner.OpenSettingsFolder(); };
             buttonFlow.Controls.Add(resetButton);
+            Button bluetoothButton = MakeButton("打开蓝牙设置");
+            bluetoothButton.Click += delegate(object sender, EventArgs e)
+            {
+                try
+                {
+                    System.Diagnostics.Process.Start("ms-settings:bluetooth");
+                }
+                catch (Exception)
+                {
+                }
+            };
+            buttonFlow.Controls.Add(bluetoothButton);
             buttonFlow.Controls.Add(folderButton);
             AddWideRow(startupTable, buttonFlow);
             startupGroup.Controls.Add(startupTable);
@@ -386,6 +414,10 @@ namespace BoogieBoardSync
                 penRadio.Checked = !runtime.MouseMode;
                 mouseRadio.Checked = runtime.MouseMode;
                 pausedCheck.Checked = runtime.Paused;
+                if (connectionCombo != null)
+                {
+                    connectionCombo.SelectedIndex = ConnectionIndex(runtime.ConnectionMode);
+                }
 
                 if (rotationCombo != null)
                 {
@@ -460,6 +492,7 @@ namespace BoogieBoardSync
                 owner.ApplySettings(
                     mouseRadio.Checked,
                     pausedCheck.Checked,
+                    ConnectionValue(connectionCombo.SelectedIndex),
                     RotationValue(rotationCombo.SelectedIndex),
                     screen,
                     min,
@@ -505,10 +538,12 @@ namespace BoogieBoardSync
             string state = runtime.Paused
                 ? "已暂停"
                 : (runtime.MouseMode ? "鼠标模式" : "数位板模式");
+            string link = string.IsNullOrEmpty(runtime.ActiveLink) ? "等待设备" : runtime.ActiveLink;
             statusLabel.Text = string.Format(
                 CultureInfo.InvariantCulture,
-                "{0}    旋转 {1}°    gamma {2:0.00}",
+                "{0}    {1}    旋转 {2}°    gamma {3:0.00}",
                 state,
+                link,
                 runtime.Rotate,
                 runtime.PressureGamma);
             statusLabel.ForeColor = runtime.Paused ? Color.Firebrick : Color.SeaGreen;
@@ -531,6 +566,20 @@ namespace BoogieBoardSync
             {
                 AppLog.Write("pressure preset selected " + index);
             }
+        }
+
+        private static int ConnectionIndex(string connection)
+        {
+            if (connection == "usb") return 1;
+            if (connection == "bluetooth") return 2;
+            return 0;
+        }
+
+        private static string ConnectionValue(int index)
+        {
+            if (index == 1) return "usb";
+            if (index == 2) return "bluetooth";
+            return "auto";
         }
 
         private static int RotationIndex(int rotation)

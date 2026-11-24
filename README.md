@@ -1,15 +1,16 @@
 # BoogieBoardSync Windows Driver
 
-Windows 用户态驱动，把 **Boogie Board Sync 9.7**（USB 名称 `Improv Sync`，`VID_2914 / PID_0100`）当作带压感的 Windows Ink 手写板使用。
+Windows 用户态驱动，把 **Boogie Board Sync 9.7**（USB 名称 `Improv Sync`，`VID_2914 / PID_0100`）当作带压感的 Windows Ink 手写板使用。支持 **USB HID** 和 **经典蓝牙 RFCOMM/SPP**。
 
-不需要安装内核驱动，不需要管理员权限。程序读取设备 vendor HID 集合的 8 字节报文，再通过 Windows 的 `InjectSyntheticPointerInput` 注入真实手写笔事件，因此 OneNote、Whiteboard、Photoshop、Krita 等应用可以直接识别压感、笔尖和侧键。
+不需要安装内核驱动，不需要管理员权限。程序从 USB vendor HID 集合或蓝牙 RFCOMM 读取 8 字节笔迹报文，再通过 Windows 的 `InjectSyntheticPointerInput` 注入真实手写笔事件，因此 OneNote、Whiteboard、Photoshop、Krita 等应用可以直接识别压感、笔尖和侧键。
 
 ## 环境要求
 
 - Windows 10 1809 或更高版本（Windows 11 已验证）
 - .NET Framework 4.8（Windows 自带）
 - 设备固件 1.25 已验证
-- USB 数据线；设备需要开机/有电
+- USB 数据线，或已配对的经典蓝牙设备
+- 设备需要开机/有电
 
 ## 构建
 
@@ -53,6 +54,29 @@ Windows 用户态驱动，把 **Boogie Board Sync 9.7**（USB 名称 `Improv Syn
 .\bin\BoogieBoardSync.exe --eject=D --set-mode=3
 ```
 
+## 蓝牙使用
+
+Boogie Board Sync 的实时笔迹走**经典蓝牙 RFCOMM/SPP**，不是 BLE GATT。使用前先在 Windows 的“设置 > 蓝牙和其他设备”里配对板子，然后扫描确认：
+
+```powershell
+.\bin\BoogieBoardSync.exe --bt-scan
+```
+
+如果能看到 `Boogie Board Sync` / `Improv Sync`，可以直接用蓝牙启动：
+
+```powershell
+.\bin\BoogieBoardSync.exe --connection=bluetooth
+.\bin\BoogieBoardSyncTray.exe --connection=bluetooth
+```
+
+如果名称不是自动识别的，可以指定地址或名称：
+
+```powershell
+.\bin\BoogieBoardSync.exe --connection=bluetooth --bt-address=AA:BB:CC:DD:EE:FF
+.\bin\BoogieBoardSync.exe --connection=bluetooth --bt-name=Sync
+```
+
+设置窗口和托盘菜单里的“连接方式”可以在 **自动（USB 优先）/ 仅 USB / 仅蓝牙** 之间即时切换。蓝牙连接同样支持 16 位力度、Windows Ink 压感、侧键和托盘热键。
 ## 托盘版
 
 `BoogieBoardSyncTray.exe` 启动后常驻系统托盘，不显示控制台窗口。
@@ -62,6 +86,7 @@ Windows 用户态驱动，把 **Boogie Board Sync 9.7**（USB 名称 `Improv Syn
 托盘菜单和设置窗口都可以：
 
 - 暂停/恢复输入
+- 连接方式：自动、USB、蓝牙
 - 在 Windows Ink 数位板和鼠标之间即时切换
 - 旋转 0/90/180/270 度
 - 映射到全部屏幕或指定显示器
@@ -127,6 +152,10 @@ Ctrl+Alt+R  旋转 90 度
 --pressure-smoothing=0  力度平滑，0.0..0.95，默认关闭
 --debug             打印原始报文和映射后的力度
 --no-tablet-mode    不主动切换模式（已用官方软件切好时使用）
+--connection=auto   auto / usb / bluetooth，默认 USB 优先
+--bt-scan           扫描附近经典蓝牙设备并退出
+--bt-address=ADDR   指定蓝牙地址，例如 AA:BB:CC:DD:EE:FF
+--bt-name=NAME      指定蓝牙名称过滤
 --help              查看全部参数
 ```
 
@@ -143,7 +172,9 @@ Ctrl+Alt+R  旋转 90 度
 .\bin\BoogieBoardSync.exe --pointers      # 查看 Windows 识别到的 pointer 设备
 .\bin\BoogieBoardSync.exe --pointer-watch --duration=20
 .\bin\BoogieBoardSync.exe --probe --duration=20 --debug
-.\bin\BoogieBoardSync.exe --selftest      # 不接设备，验证报文解析和压感换算
+.\bin\BoogieBoardSync.exe --bt-scan        # 扫描 Windows 经典蓝牙设备
+.\bin\BoogieBoardSync.exe --connection=bluetooth --probe --duration=20 --debug  # 蓝牙笔迹诊断
+.\bin\BoogieBoardSync.exe --selftest      # 不接设备，验证报文解析、蓝牙帧和压感换算
 .\bin\BoogieBoardSync.exe --test          # 不接设备，注入一个测试方块
 .\bin\BoogieBoardSync.exe --test --mouse
 ```
@@ -184,6 +215,13 @@ HID 报告：
 
 Windows 的 HID 栈和 Linux/libusb 不完全一样，某些机器上 feature 写入会返回成功但设备不采纳。因此程序内置了 `feature`、`feature-pad`、`output`、`output-id`、`output-pad` 多种写入方式；`--diag` 可以逐个查看哪种方式能让 feature 5 读回目标模式。
 
+蓝牙协议：
+
+- 服务 UUID：`d6a56f80-88f8-11e3-baa8-0800200c9a66`，Windows 上通过 Winsock `AF_BTH` / `BTHPROTO_RFCOMM` 连接。
+- 帧格式：`C0 | 转义 payload | CRC8 low | CRC8 high | C0`，转义规则为 `C0 -> DB DC`、`DB -> DB DD`。
+- 输入数据帧 payload：`xL xH | yL yH | pressureL pressureH | flags`，与 USB 完全一致。
+- 设置模式：`00 53 05 05 00 mode` 经 CRC8 和帧转义后发送。
+- 连接期间每 3 秒发送一次单独的 `C0` keepalive，避免 Windows/蓝牙栈丢帧。
 官方协议来源：
 
 - Chrome SDK `kent-displays/boogie-board-sync-sdk-chrome`（`sync-streaming.js`、`sync-capture-report.js`）
@@ -203,6 +241,8 @@ Linux 社区驱动参考：
 - 报文解析、力度曲线、坐标映射：已通过 `--selftest`。
 - 模式切换：已在真机验证，feature 5 读回 `03`，OneNote 中可观察到压感。
 - 托盘版：全局热键注册成功；设置窗口、实时力度条、暂停、数位板/鼠标切换、旋转回调与配置持久化已通过运行验证。
+- 蓝牙帧解析、CRC8、RFCOMM 套接字和 16 位力度解析：已通过 `--selftest`。
+- 蓝牙设备枚举：已在 Windows 蓝牙适配器上通过 `--bt-scan` 验证；真机笔迹需要板子配对并开机后验证。
 - 鼠标回退与侧键右键映射：已通过注入测试。
 - 官方 SDK 从不读取 feature 5 的模式值，因此部分固件可能让 feature 5 一直读回 `01`。请以 `--verify` 是否收到真实输入报文为准，而不是只看读回值。
 
@@ -215,3 +255,5 @@ Linux 社区驱动参考：
 - Windows 的 `COL01` 笔集合由系统独占，因此不能直接读取它；我们读取 `COL02`。
 - 侧键映射为手写笔第二按键，不同应用的行为可能不同。
 - 压感范围不同批次可能需要用 `--pressure-min` / `--pressure-max` 校准；托盘版提供柔和、线性、硬朗三种曲线。
+- 蓝牙必须先配对；如果 `--bt-scan` 看不到板子，先在 Windows 蓝牙设置里删除旧配对记录，再让板子进入配对模式。
+- 蓝牙和 USB 同时连接时，自动模式优先 USB；需要强制蓝牙请在设置窗口选择“仅蓝牙”。

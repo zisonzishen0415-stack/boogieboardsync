@@ -24,7 +24,9 @@ namespace BoogieBoardSync
         private readonly List<ToolStripMenuItem> rotateItems = new List<ToolStripMenuItem>();
         private readonly List<ToolStripMenuItem> screenItems = new List<ToolStripMenuItem>();
         private readonly List<ToolStripMenuItem> curveItems = new List<ToolStripMenuItem>();
+        private readonly List<ToolStripMenuItem> connectionItems = new List<ToolStripMenuItem>();
         private SettingsForm settingsForm;
+        private System.Windows.Forms.Timer statusTimer;
         private bool shuttingDown;
 
         public TrayContext(Options options)
@@ -34,6 +36,10 @@ namespace BoogieBoardSync
             try
             {
                 SettingsStore.Load(runtime);
+                if (options.Connection != "auto")
+                {
+                    runtime.SetConnectionMode(options.Connection);
+                }
                 SettingsStore.Save(runtime);
             }
             catch (Exception ex)
@@ -56,6 +62,12 @@ namespace BoogieBoardSync
             pauseItem = new ToolStripMenuItem("暂停输入  (Ctrl+Alt+P)");
             pauseItem.Click += delegate(object sender, EventArgs e) { TogglePause(); };
             menu.Items.Add(pauseItem);
+
+            ToolStripMenuItem connectionMenu = new ToolStripMenuItem("连接方式");
+            AddConnectionItem(connectionMenu, "自动（USB 优先）", "auto");
+            AddConnectionItem(connectionMenu, "仅 USB", "usb");
+            AddConnectionItem(connectionMenu, "仅蓝牙", "bluetooth");
+            menu.Items.Add(connectionMenu);
 
             menu.Items.Add(new ToolStripSeparator());
 
@@ -139,6 +151,11 @@ namespace BoogieBoardSync
             driverThread.Name = "BoogieBoardSync driver";
             driverThread.Start();
             AppLog.Write("tray started; driver thread=started");
+
+            statusTimer = new System.Windows.Forms.Timer();
+            statusTimer.Interval = 1000;
+            statusTimer.Tick += delegate(object sender, EventArgs e) { UpdateUi(); };
+            statusTimer.Start();
         }
 
         public void HandleHotkey(int id)
@@ -186,19 +203,24 @@ namespace BoogieBoardSync
             AppLog.Write("settings window shown");
         }
 
-        internal void ApplySettings(bool mouse, bool paused, int rotate, int screenIndex,
+        internal void ApplySettings(bool mouse, bool paused, string connection, int rotate, int screenIndex,
             int pressureMin, int pressureMax, double pressureGamma,
             double pressureDeadzone, double pressureSmoothing)
         {
+            string previousConnection = runtime.ConnectionMode;
             runtime.SetMouseMode(mouse);
             runtime.SetPaused(paused);
+            runtime.SetConnectionMode(connection);
             runtime.SetRotate(rotate);
             runtime.SetScreenIndex(screenIndex);
             runtime.SetPressure(pressureMin, pressureMax, pressureGamma, pressureDeadzone, pressureSmoothing);
             SaveAndRefresh();
+            if (previousConnection != runtime.ConnectionMode)
+            {
+                Program.RequestTransportRefresh();
+            }
             AppLog.Write("settings applied from window");
         }
-
         internal bool IsAutoStartEnabled()
         {
             try
@@ -226,6 +248,15 @@ namespace BoogieBoardSync
             UpdateUi();
         }
 
+        private void AddConnectionItem(ToolStripMenuItem parent, string label, string value)
+        {
+            ToolStripMenuItem item = new ToolStripMenuItem(label);
+            item.Tag = value;
+            item.Click += delegate(object sender, EventArgs e) { SetConnectionMode(value); };
+            connectionItems.Add(item);
+            parent.DropDownItems.Add(item);
+        }
+
         private void AddCurveItem(ToolStripMenuItem parent, string label, double gamma)
         {
             ToolStripMenuItem item = new ToolStripMenuItem(label);
@@ -238,6 +269,17 @@ namespace BoogieBoardSync
         private void TogglePause()
         {
             runtime.SetPaused(!runtime.Paused);
+            SaveAndRefresh();
+        }
+
+        private void SetConnectionMode(string value)
+        {
+            string previous = runtime.ConnectionMode;
+            runtime.SetConnectionMode(value);
+            if (previous != runtime.ConnectionMode)
+            {
+                Program.RequestTransportRefresh();
+            }
             SaveAndRefresh();
         }
 
@@ -311,6 +353,10 @@ namespace BoogieBoardSync
             {
                 screenItems[i].Checked = ((int)screenItems[i].Tag) == runtime.ScreenIndex;
             }
+            for (int i = 0; i < connectionItems.Count; i++)
+            {
+                connectionItems[i].Checked = (string)connectionItems[i].Tag == runtime.ConnectionMode;
+            }
             for (int i = 0; i < curveItems.Count; i++)
             {
                 double gamma = (double)curveItems[i].Tag;
@@ -329,10 +375,16 @@ namespace BoogieBoardSync
             string state = runtime.Paused
                 ? "已暂停"
                 : (runtime.MouseMode ? "鼠标模式" : "数位板模式");
-            statusItem.Text = "状态：" + state;
+            string link = string.IsNullOrEmpty(runtime.ActiveLink) ? "未连接" : runtime.ActiveLink;
+            statusItem.Text = "状态：" + state + " / " + link;
             if (icon != null)
             {
-                icon.Text = "BoogieBoardSync - " + state;
+                string trayText = "BoogieBoardSync - " + state + " / " + link;
+                if (trayText.Length > 63)
+                {
+                    trayText = trayText.Substring(0, 63);
+                }
+                icon.Text = trayText;
             }
         }
 
@@ -373,6 +425,11 @@ namespace BoogieBoardSync
             if (driverThread != null)
             {
                 driverThread.Join(2000);
+            }
+            if (statusTimer != null)
+            {
+                statusTimer.Stop();
+                statusTimer.Dispose();
             }
             if (hotkeys != null)
             {

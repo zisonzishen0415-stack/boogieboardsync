@@ -56,6 +56,10 @@ namespace BoogieBoardSync
             {
                 runtime.SetMouseMode(ParseBool(value, runtime.MouseMode));
             }
+            if (values.TryGetValue("connection", out value))
+            {
+                runtime.SetConnectionMode(value);
+            }
             if (values.TryGetValue("rotate", out value))
             {
                 runtime.SetRotate(ParseInt(value, runtime.Rotate));
@@ -110,6 +114,7 @@ namespace BoogieBoardSync
             StringBuilder text = new StringBuilder();
             text.AppendLine("# BoogieBoardSync settings");
             text.AppendLine("mouse=" + runtime.MouseMode.ToString().ToLowerInvariant());
+            text.AppendLine("connection=" + runtime.ConnectionMode);
             text.AppendLine("rotate=" + runtime.Rotate.ToString(CultureInfo.InvariantCulture));
             text.AppendLine("screen=" + runtime.ScreenIndex.ToString(CultureInfo.InvariantCulture));
             text.AppendLine("flipx=" + runtime.FlipX.ToString().ToLowerInvariant());

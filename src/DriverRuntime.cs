@@ -26,6 +26,8 @@ namespace BoogieBoardSync
         private volatile Snapshot current;
         private bool mouseMode;
         private bool paused;
+        private string connection = "auto";
+        private string activeLink = "";
         private int rotate;
         private int screenIndex;
         private bool flipX;
@@ -46,6 +48,7 @@ namespace BoogieBoardSync
             this.options = options;
             mouseMode = options.Mouse;
             paused = false;
+            connection = NormalizeConnection(options.Connection);
             rotate = options.Rotate;
             screenIndex = options.ScreenIndex;
             flipX = options.FlipX;
@@ -71,6 +74,16 @@ namespace BoogieBoardSync
         public bool Paused
         {
             get { lock (sync) { return paused; } }
+        }
+
+        public string ConnectionMode
+        {
+            get { lock (sync) { return connection; } }
+        }
+
+        public string ActiveLink
+        {
+            get { lock (sync) { return activeLink; } }
         }
 
         public int Rotate
@@ -194,6 +207,40 @@ namespace BoogieBoardSync
                 paused = value;
                 RebuildLocked();
             }
+        }
+
+        public void SetConnectionMode(string value)
+        {
+            lock (sync)
+            {
+                connection = NormalizeConnection(value);
+            }
+        }
+
+        public void SetActiveLink(string value)
+        {
+            lock (sync)
+            {
+                activeLink = value ?? "";
+            }
+        }
+
+        public static string NormalizeConnection(string value)
+        {
+            if (string.IsNullOrEmpty(value))
+            {
+                return "auto";
+            }
+            value = value.ToLowerInvariant();
+            if (value == "usb" || value == "serial" || value == "wired")
+            {
+                return "usb";
+            }
+            if (value == "bluetooth" || value == "bt" || value == "rfcomm")
+            {
+                return "bluetooth";
+            }
+            return "auto";
         }
 
         public void SetRotate(int value)
