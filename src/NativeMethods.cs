@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Runtime.InteropServices;
 using System.Text;
 
@@ -28,6 +28,7 @@ namespace BoogieBoardSync
         public const uint POINTER_FLAG_UPDATE = 0x00020000;
         public const uint POINTER_FLAG_UP = 0x00040000;
         public const uint PEN_MASK_PRESSURE = 0x00000001;
+        public const uint PEN_FLAG_BARREL = 0x00000001;
 
         public const uint INPUT_MOUSE = 0;
         public const uint MOUSEEVENTF_MOVE = 0x0001;
@@ -171,6 +172,7 @@ namespace BoogieBoardSync
         public struct PEN_INFO
         {
             public POINTER_INFO pointerInfo;
+            public uint penFlags;
             public uint penMask;
             public uint pressure;
             public uint rotation;

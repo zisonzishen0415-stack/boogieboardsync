@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.Globalization;
@@ -11,7 +11,7 @@ namespace BoogieBoardSync
     {
         private readonly Options options;
         private readonly DriverRuntime runtime;
-        private readonly Thread driverThread;
+        private Thread driverThread;
         private readonly NotifyIcon icon;
         private readonly Icon trayIcon;
         private readonly ContextMenuStrip menu;
@@ -68,6 +68,10 @@ namespace BoogieBoardSync
             AddConnectionItem(connectionMenu, "仅 USB", "usb");
             AddConnectionItem(connectionMenu, "仅蓝牙", "bluetooth");
             menu.Items.Add(connectionMenu);
+
+            ToolStripMenuItem reconnectItem = new ToolStripMenuItem("重新连接");
+            reconnectItem.Click += delegate(object sender, EventArgs e) { Program.RequestTransportRefresh(); };
+            menu.Items.Add(reconnectItem);
 
             menu.Items.Add(new ToolStripSeparator());
 
@@ -146,18 +150,51 @@ namespace BoogieBoardSync
             hotkeys = new HotkeyWindow(this);
             UpdateUi();
 
-            driverThread = new Thread(delegate() { Program.RunDriver(options, runtime); });
-            driverThread.IsBackground = true;
-            driverThread.Name = "BoogieBoardSync driver";
-            driverThread.Start();
-            AppLog.Write("tray started; driver thread=started");
+            StartDriverThread();
 
             statusTimer = new System.Windows.Forms.Timer();
             statusTimer.Interval = 1000;
-            statusTimer.Tick += delegate(object sender, EventArgs e) { UpdateUi(); };
+            statusTimer.Tick += delegate(object sender, EventArgs e) { EnsureDriverThread(); UpdateUi(); };
             statusTimer.Start();
+            AppLog.Write("tray started");
         }
 
+        private void StartDriverThread()
+        {
+            driverThread = new Thread(delegate()
+            {
+                try
+                {
+                    Program.RunDriver(options, runtime);
+                }
+                catch (Exception ex)
+                {
+                    AppLog.Write("driver thread crashed: " + ex);
+                }
+                finally
+                {
+                    AppLog.Write("driver thread exited");
+                }
+            });
+            driverThread.IsBackground = true;
+            driverThread.Name = "BoogieBoardSync driver";
+            driverThread.Start();
+            AppLog.Write("driver thread started");
+        }
+
+        private void EnsureDriverThread()
+        {
+            if (shuttingDown)
+            {
+                return;
+            }
+            if (driverThread != null && driverThread.IsAlive)
+            {
+                return;
+            }
+            AppLog.Write("driver thread not running; restarting");
+            StartDriverThread();
+        }
         public void HandleHotkey(int id)
         {
             AppLog.Write("hotkey " + id);

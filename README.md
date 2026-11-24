@@ -56,18 +56,20 @@ Windows 用户态驱动，把 **Boogie Board Sync 9.7**（USB 名称 `Improv Syn
 
 ## 蓝牙使用
 
-Boogie Board Sync 的实时笔迹走**经典蓝牙 RFCOMM/SPP**，不是 BLE GATT。使用前先在 Windows 的“设置 > 蓝牙和其他设备”里配对板子，然后扫描确认：
+Boogie Board Sync 的实时笔迹走**经典蓝牙 RFCOMM**（Sync Streaming Profile，UUID `d6a56f80-88f8-11e3-baa8-0800200c9a66`，通道 3），不是 BLE GATT。使用前先在 Windows 的“设置 > 蓝牙和其他设备”里配对板子，然后扫描确认：
 
 ```powershell
 .\bin\BoogieBoardSync.exe --bt-scan
 ```
 
-如果能看到 `Boogie Board Sync` / `Improv Sync`，可以直接用蓝牙启动：
+如果能看到 `Sync` / `Boogie Board Sync` / `Improv Sync`，可以直接用蓝牙启动：
 
 ```powershell
 .\bin\BoogieBoardSync.exe --connection=bluetooth
 .\bin\BoogieBoardSyncTray.exe --connection=bluetooth
 ```
+
+蓝牙模式会自动使用 **capture 模式 4**，由本程序读取原始 8 字节笔迹并注入 Windows Ink，因此压感、笔尖、侧键、旋转、力度曲线和鼠标模式都可用。USB 模式仍然使用 digitizer 模式 3。
 
 如果名称不是自动识别的，可以指定地址或名称：
 
@@ -76,7 +78,24 @@ Boogie Board Sync 的实时笔迹走**经典蓝牙 RFCOMM/SPP**，不是 BLE GAT
 .\bin\BoogieBoardSync.exe --connection=bluetooth --bt-name=Sync
 ```
 
-设置窗口和托盘菜单里的“连接方式”可以在 **自动（USB 优先）/ 仅 USB / 仅蓝牙** 之间即时切换。蓝牙连接同样支持 16 位力度、Windows Ink 压感、侧键和托盘热键。
+如果板子插着 USB 线（例如充电），固件会停止蓝牙流；程序会自动切换到 USB，拔掉 USB 后下一次重连会自动回到蓝牙。
+
+蓝牙连接是独占的：官方 App、其他驱动或 Windows 自带的“蓝牙 HID 设备”可能占用同一个 RFCOMM 通道。遇到 `蓝牙连接被拒绝` 或 `蓝牙连接超时` 时，先关闭官方 App/其他驱动，等几秒后托盘会自动重连。托盘在链路断开时会在约 3 秒内检测到并自动恢复。
+
+诊断蓝牙原始笔迹：
+
+```powershell
+.\bin\BoogieBoardSync.exe --connection=bluetooth --probe --duration=20 --debug
+```
+
+输出中的 `side=False` 表示没有按侧键；`pressure` 是原始 16 位力度。若通道自动识别失败，可以手动指定：
+
+```powershell
+.\bin\BoogieBoardSync.exe --connection=bluetooth --bt-channel=3
+```
+
+设置窗口和托盘菜单里的“连接方式”可以在 **自动（USB 优先）/ 仅 USB / 仅蓝牙** 之间即时切换。
+
 ## 托盘版
 
 `BoogieBoardSyncTray.exe` 启动后常驻系统托盘，不显示控制台窗口。
@@ -130,7 +149,7 @@ Ctrl+Alt+R  旋转 90 度
 ## 常用参数
 
 ```text
---mode=3            默认，digitizer，实时笔迹
+--mode=3            USB 默认，digitizer；蓝牙自动使用 4（capture）
 --mode=4            capture，按键/保存事件
 --mode=5            file，仅保存完成事件
 --eject=D           切换模式前释放指定盘符
@@ -156,6 +175,7 @@ Ctrl+Alt+R  旋转 90 度
 --bt-scan           扫描附近经典蓝牙设备并退出
 --bt-address=ADDR   指定蓝牙地址，例如 AA:BB:CC:DD:EE:FF
 --bt-name=NAME      指定蓝牙名称过滤
+--bt-channel=N      手动指定 RFCOMM 通道，默认自动识别（Sync 为 3）
 --help              查看全部参数
 ```
 

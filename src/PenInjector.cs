@@ -231,6 +231,7 @@ namespace BoogieBoardSync
             }
             info.penInfo.pointerInfo.ptPixelLocation = point;
             info.penInfo.pointerInfo.ptPixelLocationRaw = point;
+            info.penInfo.penFlags = side ? NativeMethods.PEN_FLAG_BARREL : 0;
             info.penInfo.penMask = NativeMethods.PEN_MASK_PRESSURE;
             info.penInfo.pressure = (uint)pressure;
 

@@ -4,6 +4,7 @@ using System.Globalization;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
+using Microsoft.Win32;
 
 namespace BoogieBoardSync
 {
@@ -90,6 +91,12 @@ namespace BoogieBoardSync
             return bestScore > 0 ? best : null;
         }
 
+        private static readonly byte[] StreamingServiceSdpUuid = new byte[]
+        {
+            0xD6, 0xA5, 0x6F, 0x80, 0x88, 0xF8, 0x11, 0xE3,
+            0xBA, 0xA8, 0x08, 0x00, 0x20, 0x0C, 0x9A, 0x66
+        };
+
         public static bool TryParseAddress(string text, out ulong address)
         {
             address = 0;
@@ -99,6 +106,136 @@ namespace BoogieBoardSync
             }
             string hex = text.Replace(":", "").Replace("-", "").Replace(" ", "").Trim();
             return ulong.TryParse(hex, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out address);
+        }
+
+        public static int ResolveRfcommChannel(ulong address)
+        {
+            int channel = FindCachedChannel(address, true);
+            if (channel > 0)
+            {
+                return channel;
+            }
+            channel = FindCachedChannel(address, false);
+            if (channel > 0)
+            {
+                return channel;
+            }
+            return 3;
+        }
+
+        public static bool TryFindRfcommChannel(byte[] record, out int channel)
+        {
+            channel = 0;
+            if (record == null || record.Length < 5)
+            {
+                return false;
+            }
+            if (!Contains(record, StreamingServiceSdpUuid) && !ContainsAscii(record, "HID over SPP"))
+            {
+                return false;
+            }
+            return TryFindRfcommChannelRaw(record, out channel);
+        }
+
+        public static bool TryFindRfcommChannelRaw(byte[] record, out int channel)
+        {
+            channel = 0;
+            if (record == null)
+            {
+                return false;
+            }
+            for (int i = 0; i + 4 < record.Length; i++)
+            {
+                if (record[i] == 0x19 && record[i + 1] == 0x00 && record[i + 2] == 0x03 && record[i + 3] == 0x08)
+                {
+                    int value = record[i + 4];
+                    if (value > 0 && value < 32)
+                    {
+                        channel = value;
+                        return true;
+                    }
+                }
+            }
+            return false;
+        }
+
+        private static int FindCachedChannel(ulong address, bool customOnly)
+        {
+            string addressText = address.ToString("x12", CultureInfo.InvariantCulture);
+            string basePath = "SYSTEM\\CurrentControlSet\\Services\\BTHPORT\\Parameters\\Devices\\" + addressText;
+            string[] names = new string[] { "CachedServices", "DynamicCachedServices" };
+            for (int n = 0; n < names.Length; n++)
+            {
+                try
+                {
+                    using (RegistryKey key = Registry.LocalMachine.OpenSubKey(basePath + "\\" + names[n]))
+                    {
+                        if (key == null)
+                        {
+                            continue;
+                        }
+                        string[] valueNames = key.GetValueNames();
+                        for (int i = 0; i < valueNames.Length; i++)
+                        {
+                            byte[] record = key.GetValue(valueNames[i]) as byte[];
+                            if (record == null)
+                            {
+                                continue;
+                            }
+                            int channel;
+                            if (customOnly)
+                            {
+                                if (TryFindRfcommChannel(record, out channel))
+                                {
+                                    return channel;
+                                }
+                            }
+                            else if (TryFindRfcommChannelRaw(record, out channel))
+                            {
+                                return channel;
+                            }
+                        }
+                    }
+                }
+                catch (Exception)
+                {
+                }
+            }
+            return 0;
+        }
+
+        private static bool Contains(byte[] data, byte[] pattern)
+        {
+            if (data == null || pattern == null || data.Length < pattern.Length)
+            {
+                return false;
+            }
+            for (int i = 0; i <= data.Length - pattern.Length; i++)
+            {
+                bool match = true;
+                for (int j = 0; j < pattern.Length; j++)
+                {
+                    if (data[i + j] != pattern[j])
+                    {
+                        match = false;
+                        break;
+                    }
+                }
+                if (match)
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        private static bool ContainsAscii(byte[] data, string text)
+        {
+            if (data == null || text == null)
+            {
+                return false;
+            }
+            return Contains(data, Encoding.ASCII.GetBytes(text));
         }
 
         private static void FindPass(bool inquiry, bool includeUnknown, List<BluetoothDeviceInfo> result,
@@ -214,12 +351,24 @@ namespace BoogieBoardSync
         private readonly Queue<byte[]> pending = new Queue<byte[]>();
         private readonly BluetoothFrameParser parser = new BluetoothFrameParser();
         private readonly byte[] readBuffer = new byte[2048];
+        private readonly int channelOverride;
         private IntPtr socket = NativeMethodsBluetooth.InvalidSocket;
         private Thread keepAliveThread;
         private volatile bool stopping;
 
+        public int Channel;
         public int LastSocketError;
         public string LastErrorText = "";
+
+        public BluetoothTransport()
+            : this(0)
+        {
+        }
+
+        public BluetoothTransport(int channel)
+        {
+            channelOverride = channel;
+        }
 
         public bool IsConnected
         {
@@ -272,11 +421,18 @@ namespace BoogieBoardSync
                 return false;
             }
 
+            int channel = channelOverride;
+            if (channel <= 0)
+            {
+                channel = BluetoothDiscovery.ResolveRfcommChannel(device.Address);
+            }
+            Channel = channel;
+
             NativeMethodsBluetooth.SockAddrBth address = new NativeMethodsBluetooth.SockAddrBth();
             address.AddressFamily = NativeMethodsBluetooth.AfBth;
             address.BluetoothAddress = device.Address;
-            address.ServiceClassId = StreamingServiceUuid;
-            address.Port = 0;
+            address.ServiceClassId = Guid.Empty;
+            address.Port = (uint)channel;
 
             int result = NativeMethodsBluetooth.connect(
                 created,
@@ -438,6 +594,8 @@ namespace BoogieBoardSync
                 }
                 if (!SendRaw(keepAlive))
                 {
+                    stopping = true;
+                    CloseSocket();
                     break;
                 }
             }
@@ -531,7 +689,7 @@ namespace BoogieBoardSync
         private static bool winsockReady;
         private static string winsockError = "";
 
-        [StructLayout(LayoutKind.Sequential)]
+        [StructLayout(LayoutKind.Sequential, Pack = 1)]
         public struct SockAddrBth
         {
             public ushort AddressFamily;

@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Globalization;
@@ -22,6 +22,7 @@ namespace BoogieBoardSync
         public bool Blind;
         public int SetMode = -1;
         public int Mode = 3;
+        public bool ModeExplicit;
         public int Retries = 80;
         public int RetryDelay = 60;
         public string EjectDrive = "";
@@ -33,6 +34,7 @@ namespace BoogieBoardSync
         public string BluetoothAddress = "";
         public string BluetoothName = "";
         public bool BluetoothScan;
+        public int BluetoothChannel;
         public int HostType = 8;
         public bool FeaturePad;
         public bool Test;
@@ -102,6 +104,7 @@ namespace BoogieBoardSync
                 else if (arg.StartsWith("--mode=", StringComparison.OrdinalIgnoreCase))
                 {
                     options.Mode = ParseInt(Value(arg), options.Mode);
+                    options.ModeExplicit = true;
                     if (!IsSupportedMode(options.Mode))
                     {
                         throw new ArgumentException("--mode must be 1, 3, 4 or 5");
@@ -141,6 +144,10 @@ namespace BoogieBoardSync
                 else if (arg.StartsWith("--bt-name=", StringComparison.OrdinalIgnoreCase))
                 {
                     options.BluetoothName = Value(arg);
+                }
+                else if (arg.StartsWith("--bt-channel=", StringComparison.OrdinalIgnoreCase))
+                {
+                    options.BluetoothChannel = Math.Max(0, Math.Min(31, ParseInt(Value(arg), 0)));
                 }
                 else if (arg == "--bt-scan")
                 {
@@ -1071,7 +1078,13 @@ namespace BoogieBoardSync
                     NativeMethodsBluetooth.closesocket(rfcommSocket);
                 }
             }
-            failures = Check(Marshal.SizeOf(typeof(NativeMethodsBluetooth.SockAddrBth)) == 40, "bluetooth sockaddr layout", failures);
+            failures = Check(Marshal.SizeOf(typeof(NativeMethodsBluetooth.SockAddrBth)) == 30, "bluetooth sockaddr layout", failures);
+            failures = Check(Marshal.SizeOf(typeof(NativeMethods.POINTER_INFO)) == 96, "pointer info layout", failures);
+            failures = Check(Marshal.SizeOf(typeof(NativeMethods.PEN_INFO)) == 120, "pen info layout", failures);
+            failures = Check(Marshal.OffsetOf(typeof(NativeMethods.PEN_INFO), "penFlags").ToInt32() == 96, "pen flags offset", failures);
+            byte[] sdpRecord = new byte[] { 0x35, 0x05, 0x19, 0x00, 0x03, 0x08, 0x03, 0x48, 0x49, 0x44, 0x20, 0x6F, 0x76, 0x65, 0x72, 0x20, 0x53, 0x50, 0x50 };
+            int sdpChannel = 0;
+            failures = Check(BluetoothDiscovery.TryFindRfcommChannel(sdpRecord, out sdpChannel) && sdpChannel == 3, "bluetooth rfcomm channel", failures);
             byte[] bluetoothPacket = new byte[] { 0x01, 0xA3, 0x03, 0xC0, 0x00, 0xDB, 0x00, 0x34, 0x12, 0x05 };
             byte[] bluetoothFrame = BluetoothProtocol.FramePacket(bluetoothPacket);
             BluetoothFrameParser bluetoothParser = new BluetoothFrameParser();
@@ -1513,6 +1526,7 @@ namespace BoogieBoardSync
 
             currentDevice = target;
             runtime.SetActiveLink("USB");
+            AppLog.Write("usb connected: " + target.Path);
             try
             {
                 if (!options.NoTabletMode)
@@ -1536,8 +1550,26 @@ namespace BoogieBoardSync
             }
         }
 
+        private static int BluetoothStreamMode(Options options)
+        {
+            if (options.ModeExplicit && (options.Mode == 1 || options.Mode == 4 || options.Mode == 5))
+            {
+                return options.Mode;
+            }
+            return 4;
+        }
+
         private static void RunBluetoothSession(Options options, DriverRuntime runtime, PenInjector injector)
         {
+            HidDevice[] usbDevices = HidDevice.FindAll(HidDevice.BoogieVendorId, HidDevice.BoogieProductId);
+            if (usbDevices.Length > 0)
+            {
+                Console.WriteLine("USB cable detected; the board disables Bluetooth streaming while USB is connected. Using USB.");
+                AppLog.Write("usb detected; bluetooth session switching to usb");
+                RunUsbSession(options, runtime, injector);
+                return;
+            }
+
             BluetoothDeviceInfo device = BluetoothDiscovery.FindPreferred(options.BluetoothAddress, options.BluetoothName);
             if (device == null)
             {
@@ -1551,7 +1583,7 @@ namespace BoogieBoardSync
             }
 
             Console.WriteLine("Using Bluetooth: {0} ({1})", device.Name, device.AddressText);
-            BluetoothTransport transport = new BluetoothTransport();
+            BluetoothTransport transport = new BluetoothTransport(options.BluetoothChannel);
             currentBluetooth = transport;
             try
             {
@@ -1566,17 +1598,20 @@ namespace BoogieBoardSync
                 }
 
                 runtime.SetActiveLink("蓝牙 " + device.AddressText);
-                AppLog.Write("bluetooth connected: " + device.Name + " " + device.AddressText);
+                AppLog.Write("bluetooth connected: " + device.Name + " " + device.AddressText + " channel " + transport.Channel);
+                int streamMode = BluetoothStreamMode(options);
                 if (!options.NoTabletMode)
                 {
-                    bool modeOk = transport.ConfigureForTablet(options.Mode, options.NoHandshake, options.HostType);
+                    bool modeOk = transport.ConfigureForTablet(streamMode, options.NoHandshake, options.HostType);
+                    Console.WriteLine("Bluetooth channel {0}, stream mode {1}: {2}", transport.Channel, streamMode,
+                        modeOk ? "confirmed" : "unconfirmed");
                     if (!modeOk)
                     {
                         Console.WriteLine("WARN: Bluetooth mode command was not fully acknowledged; draw on the board to test input.");
                     }
                 }
 
-                ReadBluetoothReports(transport, runtime, injector, options);
+                ReadBluetoothReports(transport, runtime, injector, options, streamMode);
             }
             finally
             {
@@ -1618,37 +1653,67 @@ namespace BoogieBoardSync
 
             Console.WriteLine("Stopped. reports={0} parsed={1} injected={2} failed={3}",
                 reports, processor.ParsedReports, injector.InjectedCount, injector.FailedCount);
+            AppLog.Write(string.Format("hid stopped: reports={0} parsed={1} injected={2} failed={3}",
+                reports, processor.ParsedReports, injector.InjectedCount, injector.FailedCount));
         }
 
         private static void ReadBluetoothReports(BluetoothTransport transport, DriverRuntime runtime,
-            PenInjector injector, Options options)
+            PenInjector injector, Options options, int streamMode)
         {
             byte[] buffer = new byte[64];
             int frames = 0;
+            long lastReportTicks = DateTime.UtcNow.Ticks;
             ReportProcessor processor = new ReportProcessor(runtime, injector, options);
-
-            while (!stopRequested && !reconnectRequested)
+            Timer modeTimer = new Timer(delegate(object state)
             {
-                int count = transport.Read(buffer);
-                if (count == -1)
+                if (stopRequested || reconnectRequested || !transport.IsConnected)
                 {
-                    break;
+                    return;
                 }
-                if (count < 0)
+                long last = Interlocked.Read(ref lastReportTicks);
+                if (DateTime.UtcNow.Ticks - last < TimeSpan.TicksPerSecond * 15)
                 {
-                    if (!stopRequested && !reconnectRequested)
-                    {
-                        Console.WriteLine("Bluetooth read failed: {0}", transport.LastErrorText);
-                    }
-                    break;
+                    return;
                 }
-                if (count == 0)
+                Interlocked.Exchange(ref lastReportTicks, DateTime.UtcNow.Ticks);
+                AppLog.Write("bluetooth idle; reasserting capture mode " + streamMode);
+                if (!transport.SendFeatureReport(0x05, new byte[] { (byte)streamMode }))
                 {
-                    continue;
+                    AppLog.Write("bluetooth idle reassert failed: " + transport.LastErrorText);
+                    transport.CancelRead();
                 }
+            }, null, 15000, 15000);
 
-                frames++;
-                processor.Process(buffer, count);
+            try
+            {
+                while (!stopRequested && !reconnectRequested)
+                {
+                    int count = transport.Read(buffer);
+                    if (count == -1)
+                    {
+                        break;
+                    }
+                    if (count < 0)
+                    {
+                        if (!stopRequested && !reconnectRequested)
+                        {
+                            Console.WriteLine("Bluetooth read failed: {0}", transport.LastErrorText);
+                        }
+                        break;
+                    }
+                    if (count == 0)
+                    {
+                        continue;
+                    }
+
+                    Interlocked.Exchange(ref lastReportTicks, DateTime.UtcNow.Ticks);
+                    frames++;
+                    processor.Process(buffer, count);
+                }
+            }
+            finally
+            {
+                modeTimer.Dispose();
             }
 
             Console.WriteLine("Bluetooth stopped. frames={0} parsed={1} bad={2} control={3} injected={4} failed={5}",
@@ -1658,6 +1723,14 @@ namespace BoogieBoardSync
                 transport.ControlFrames,
                 injector.InjectedCount,
                 injector.FailedCount);
+            AppLog.Write(string.Format(
+                "bluetooth stopped: frames={0} parsed={1} bad={2} control={3} injected={4} failed={5}",
+                frames,
+                processor.ParsedReports,
+                transport.BadFrames,
+                transport.ControlFrames,
+                injector.InjectedCount,
+                injector.FailedCount));
         }
 
         private sealed class ReportProcessor
@@ -1778,6 +1851,13 @@ namespace BoogieBoardSync
 
         private static int RunBluetoothProbe(Options options)
         {
+            HidDevice[] usbDevices = HidDevice.FindAll(HidDevice.BoogieVendorId, HidDevice.BoogieProductId);
+            if (usbDevices.Length > 0)
+            {
+                Console.Error.WriteLine("USB cable detected. Unplug USB to use Bluetooth streaming (the board disables it while charging).");
+                return 3;
+            }
+
             BluetoothDeviceInfo device = BluetoothDiscovery.FindPreferred(options.BluetoothAddress, options.BluetoothName);
             if (device == null)
             {
@@ -1785,7 +1865,7 @@ namespace BoogieBoardSync
                 return 2;
             }
 
-            using (BluetoothTransport transport = new BluetoothTransport())
+            using (BluetoothTransport transport = new BluetoothTransport(options.BluetoothChannel))
             {
                 string error;
                 Console.WriteLine("Bluetooth probe: {0} ({1})", device.Name, device.AddressText);
@@ -1795,9 +1875,12 @@ namespace BoogieBoardSync
                     return 2;
                 }
 
+                int streamMode = BluetoothStreamMode(options);
                 if (!options.NoTabletMode)
                 {
-                    transport.ConfigureForTablet(options.Mode, options.NoHandshake, options.HostType);
+                    bool modeOk = transport.ConfigureForTablet(streamMode, options.NoHandshake, options.HostType);
+                    Console.WriteLine("Bluetooth channel {0}, stream mode {1}: {2}", transport.Channel, streamMode,
+                        modeOk ? "confirmed" : "unconfirmed");
                 }
 
                 Console.WriteLine("Draw on the board now. Probing for {0} seconds...", options.DurationSeconds);
@@ -1812,52 +1895,64 @@ namespace BoogieBoardSync
                 int minPressure = int.MaxValue;
                 int maxPressure = int.MinValue;
                 long lastPrintMs = -1000;
+                Timer watchdog = new Timer(
+                    delegate(object state) { transport.CancelRead(); },
+                    null,
+                    Math.Max(1000, options.DurationSeconds * 1000),
+                    Timeout.Infinite);
 
-                while (!stopRequested && clock.Elapsed.TotalSeconds < options.DurationSeconds)
+                try
                 {
-                    int count = transport.Read(buffer);
-                    if (count == -1)
+                    while (!stopRequested && clock.Elapsed.TotalSeconds < options.DurationSeconds)
                     {
-                        break;
-                    }
-                    if (count < 0)
-                    {
-                        if (!stopRequested)
+                        int count = transport.Read(buffer);
+                        if (count == -1)
                         {
-                            Console.WriteLine("Bluetooth read failed: {0}", transport.LastErrorText);
+                            break;
                         }
-                        break;
-                    }
-                    if (count == 0)
-                    {
-                        continue;
-                    }
+                        if (count < 0)
+                        {
+                            if (!stopRequested)
+                            {
+                                Console.WriteLine("Bluetooth read failed: {0}", transport.LastErrorText);
+                            }
+                            break;
+                        }
+                        if (count == 0)
+                        {
+                            continue;
+                        }
 
-                    reports++;
-                    int x;
-                    int y;
-                    int pressure;
-                    bool touch;
-                    bool hover;
-                    bool side;
-                    if (!TryParseReport(buffer, count, out x, out y, out pressure, out touch, out hover, out side))
-                    {
-                        continue;
-                    }
+                        reports++;
+                        int x;
+                        int y;
+                        int pressure;
+                        bool touch;
+                        bool hover;
+                        bool side;
+                        if (!TryParseReport(buffer, count, out x, out y, out pressure, out touch, out hover, out side))
+                        {
+                            continue;
+                        }
 
-                    parsed++;
-                    if (x < minX) minX = x;
-                    if (x > maxX) maxX = x;
-                    if (y < minY) minY = y;
-                    if (y > maxY) maxY = y;
-                    if (pressure < minPressure) minPressure = pressure;
-                    if (pressure > maxPressure) maxPressure = pressure;
-                    if (options.Debug && clock.ElapsedMilliseconds - lastPrintMs > 100)
-                    {
-                        lastPrintMs = clock.ElapsedMilliseconds;
-                        Console.WriteLine("x={0} y={1} pressure={2} touch={3} hover={4} side={5} bytes={6}",
-                            x, y, pressure, touch, hover, side, Hex(buffer, 0, count));
+                        parsed++;
+                        if (x < minX) minX = x;
+                        if (x > maxX) maxX = x;
+                        if (y < minY) minY = y;
+                        if (y > maxY) maxY = y;
+                        if (pressure < minPressure) minPressure = pressure;
+                        if (pressure > maxPressure) maxPressure = pressure;
+                        if (options.Debug && clock.ElapsedMilliseconds - lastPrintMs > 100)
+                        {
+                            lastPrintMs = clock.ElapsedMilliseconds;
+                            Console.WriteLine("x={0} y={1} pressure={2} touch={3} hover={4} side={5} bytes={6}",
+                                x, y, pressure, touch, hover, side, Hex(buffer, 0, count));
+                        }
                     }
+                }
+                finally
+                {
+                    watchdog.Dispose();
                 }
 
                 Console.WriteLine("Bluetooth probe done. reports={0} parsed={1} bad={2} control={3}", reports, parsed, transport.BadFrames, transport.ControlFrames);
@@ -2214,7 +2309,7 @@ namespace BoogieBoardSync
             Console.WriteLine("  --doctor                Diagnose storage, handshake and mode switching");
             Console.WriteLine("  --verify                Set mode, then verify real input reports");
             Console.WriteLine("  --blind                 Send mode commands without feature 5 readback");
-            Console.WriteLine("  --mode=N                Mode for normal/probe run, default 3 (digitizer)");
+            Console.WriteLine("  --mode=N                USB mode, default 3 (digitizer); Bluetooth defaults to 4 (capture)");
             Console.WriteLine("  --set-mode=N            Retry setting mode N and exit");
             Console.WriteLine("  --eject=D               Release this drive before changing mode");
             Console.WriteLine("  --no-eject              Do not auto-release the device's U-disk volume");
@@ -2245,6 +2340,7 @@ namespace BoogieBoardSync
             Console.WriteLine("  --bt-scan               Scan/discover nearby Bluetooth devices and exit");
             Console.WriteLine("  --bt-address=ADDR       Bluetooth address, for example AA:BB:CC:DD:EE:FF");
             Console.WriteLine("  --bt-name=NAME          Bluetooth name filter, default Boogie/Improv/Sync auto-detect");
+            Console.WriteLine("  --bt-channel=N          RFCOMM channel override; default auto-detect (Sync streaming is channel 3)");
             Console.WriteLine("  --help                  Show this help");
             Console.WriteLine("");
             Console.WriteLine("Examples:");
@@ -2255,6 +2351,7 @@ namespace BoogieBoardSync
             Console.WriteLine("  BoogieBoardSync.exe --test --mouse");
             Console.WriteLine("  BoogieBoardSync.exe --bt-scan");
             Console.WriteLine("  BoogieBoardSync.exe --connection=bluetooth --probe --debug");
+            Console.WriteLine("  BoogieBoardSync.exe --connection=bluetooth   (uses channel 3 + capture mode 4)");
             Console.WriteLine("  BoogieBoardSync.exe --connection=bluetooth --bt-address=AA:BB:CC:DD:EE:FF");
         }
     }
