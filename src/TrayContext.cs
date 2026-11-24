@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.Globalization;
@@ -24,6 +24,7 @@ namespace BoogieBoardSync
         private readonly List<ToolStripMenuItem> rotateItems = new List<ToolStripMenuItem>();
         private readonly List<ToolStripMenuItem> screenItems = new List<ToolStripMenuItem>();
         private readonly List<ToolStripMenuItem> curveItems = new List<ToolStripMenuItem>();
+        private SettingsForm settingsForm;
         private bool shuttingDown;
 
         public TrayContext(Options options)
@@ -46,6 +47,11 @@ namespace BoogieBoardSync
             statusItem = new ToolStripMenuItem("正在启动");
             statusItem.Enabled = false;
             menu.Items.Add(statusItem);
+
+            ToolStripMenuItem settingsItem = new ToolStripMenuItem("打开设置窗口  (Ctrl+Alt+S)");
+            settingsItem.Font = new Font(settingsItem.Font, FontStyle.Bold);
+            settingsItem.Click += delegate(object sender, EventArgs e) { ShowSettings(); };
+            menu.Items.Add(settingsItem);
 
             pauseItem = new ToolStripMenuItem("暂停输入  (Ctrl+Alt+P)");
             pauseItem.Click += delegate(object sender, EventArgs e) { TogglePause(); };
@@ -122,7 +128,7 @@ namespace BoogieBoardSync
             icon.Icon = trayIcon;
             icon.Text = "BoogieBoardSync";
             icon.ContextMenuStrip = menu;
-            icon.DoubleClick += delegate(object sender, EventArgs e) { TogglePause(); };
+            icon.DoubleClick += delegate(object sender, EventArgs e) { ShowSettings(); };
             icon.Visible = true;
 
             hotkeys = new HotkeyWindow(this);
@@ -150,6 +156,74 @@ namespace BoogieBoardSync
             {
                 SetRotation(NextRotation(runtime.Rotate));
             }
+            else if (id == 4)
+            {
+                ShowSettings();
+            }
+        }
+
+        internal DriverRuntime Runtime
+        {
+            get { return runtime; }
+        }
+
+        internal void ShowSettings()
+        {
+            if (settingsForm == null || settingsForm.IsDisposed)
+            {
+                settingsForm = new SettingsForm(this);
+            }
+            if (!settingsForm.Visible)
+            {
+                settingsForm.Show();
+            }
+            if (settingsForm.WindowState == FormWindowState.Minimized)
+            {
+                settingsForm.WindowState = FormWindowState.Normal;
+            }
+            settingsForm.Activate();
+            settingsForm.BringToFront();
+            AppLog.Write("settings window shown");
+        }
+
+        internal void ApplySettings(bool mouse, bool paused, int rotate, int screenIndex,
+            int pressureMin, int pressureMax, double pressureGamma,
+            double pressureDeadzone, double pressureSmoothing)
+        {
+            runtime.SetMouseMode(mouse);
+            runtime.SetPaused(paused);
+            runtime.SetRotate(rotate);
+            runtime.SetScreenIndex(screenIndex);
+            runtime.SetPressure(pressureMin, pressureMax, pressureGamma, pressureDeadzone, pressureSmoothing);
+            SaveAndRefresh();
+            AppLog.Write("settings applied from window");
+        }
+
+        internal bool IsAutoStartEnabled()
+        {
+            try
+            {
+                return SettingsStore.IsAutoStartEnabled();
+            }
+            catch (Exception ex)
+            {
+                AppLog.Write("autostart read failed: " + ex.Message);
+                return false;
+            }
+        }
+
+        internal void SetAutoStartEnabled(bool enabled)
+        {
+            try
+            {
+                SettingsStore.SetAutoStart(enabled);
+                AppLog.Write("autostart set to " + enabled);
+            }
+            catch (Exception ex)
+            {
+                AppLog.Write("autostart write failed: " + ex.Message);
+            }
+            UpdateUi();
         }
 
         private void AddCurveItem(ToolStripMenuItem parent, string label, double gamma)
@@ -209,7 +283,8 @@ namespace BoogieBoardSync
             {
                 SettingsStore.Save(runtime);
                 AppLog.Write(string.Format(
-                    "settings saved; mouse={0} rotate={1} screen={2} gamma={3}",
+                    "settings saved; paused={0} mouse={1} rotate={2} screen={3} gamma={4}",
+                    runtime.Paused,
                     runtime.MouseMode,
                     runtime.Rotate,
                     runtime.ScreenIndex,
@@ -269,7 +344,7 @@ namespace BoogieBoardSync
             return 0;
         }
 
-        private void OpenSettingsFolder()
+        internal void OpenSettingsFolder()
         {
             try
             {
@@ -307,6 +382,12 @@ namespace BoogieBoardSync
             {
                 icon.Visible = false;
                 icon.Dispose();
+            }
+            if (settingsForm != null)
+            {
+                settingsForm.Hide();
+                settingsForm.Dispose();
+                settingsForm = null;
             }
             if (trayIcon != null)
             {
@@ -348,7 +429,8 @@ namespace BoogieBoardSync
                 bool p = NativeMethods.RegisterHotKey(Handle, 1, modifiers, (uint)Keys.P);
                 bool m = NativeMethods.RegisterHotKey(Handle, 2, modifiers, (uint)Keys.M);
                 bool r = NativeMethods.RegisterHotKey(Handle, 3, modifiers, (uint)Keys.R);
-                AppLog.Write(string.Format("hotkeys registered p={0} m={1} r={2} handle={3}", p, m, r, Handle));
+                bool s = NativeMethods.RegisterHotKey(Handle, 4, modifiers, (uint)Keys.S);
+                AppLog.Write(string.Format("hotkeys registered p={0} m={1} r={2} s={3} handle={4}", p, m, r, s, Handle));
             }
 
             public void Close()
@@ -358,12 +440,18 @@ namespace BoogieBoardSync
                     NativeMethods.UnregisterHotKey(Handle, 1);
                     NativeMethods.UnregisterHotKey(Handle, 2);
                     NativeMethods.UnregisterHotKey(Handle, 3);
+                    NativeMethods.UnregisterHotKey(Handle, 4);
                     DestroyHandle();
                 }
             }
 
             protected override void WndProc(ref Message message)
             {
+                if (message.Msg == NativeMethods.WM_SHOW_SETTINGS)
+                {
+                    owner.ShowSettings();
+                    return;
+                }
                 if (message.Msg == NativeMethods.WM_HOTKEY)
                 {
                     owner.HandleHotkey(message.WParam.ToInt32());

@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Threading;
 using System.Windows.Forms;
 
@@ -6,6 +6,21 @@ namespace BoogieBoardSync
 {
     internal static class TrayProgram
     {
+        private static bool ShowExistingSettings()
+        {
+            for (int i = 0; i < 20; i++)
+            {
+                IntPtr window = NativeMethods.FindWindow(null, "BoogieBoardSyncHotkeys");
+                if (window != IntPtr.Zero)
+                {
+                    NativeMethods.PostMessage(window, NativeMethods.WM_SHOW_SETTINGS, IntPtr.Zero, IntPtr.Zero);
+                    return true;
+                }
+                Thread.Sleep(100);
+            }
+            return false;
+        }
+
         [STAThread]
         public static int Main(string[] args)
         {
@@ -14,11 +29,14 @@ namespace BoogieBoardSync
             {
                 if (!createdNew)
                 {
-                    MessageBox.Show(
-                        "BoogieBoardSync 托盘程序已经在运行。",
-                        "BoogieBoardSync",
-                        MessageBoxButtons.OK,
-                        MessageBoxIcon.Information);
+                    if (!ShowExistingSettings())
+                    {
+                        MessageBox.Show(
+                            "BoogieBoardSync 托盘程序已经在运行，但没有找到设置窗口。",
+                            "BoogieBoardSync",
+                            MessageBoxButtons.OK,
+                            MessageBoxIcon.Information);
+                    }
                     return 0;
                 }
 

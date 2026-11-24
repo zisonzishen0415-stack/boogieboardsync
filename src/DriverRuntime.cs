@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Windows.Forms;
 
 namespace BoogieBoardSync
@@ -35,6 +35,11 @@ namespace BoogieBoardSync
         private double pressureGamma;
         private double pressureDeadzone;
         private double pressureSmoothing;
+        private int lastRawPressure;
+        private int lastMappedPressure;
+        private bool lastTouch;
+        private bool lastHover;
+        private DateTime lastInputUtc = DateTime.MinValue;
 
         public DriverRuntime(Options options)
         {
@@ -111,6 +116,58 @@ namespace BoogieBoardSync
         public double PressureSmoothing
         {
             get { lock (sync) { return pressureSmoothing; } }
+        }
+
+        public int LastRawPressure
+        {
+            get { lock (sync) { return lastRawPressure; } }
+        }
+
+        public int LastMappedPressure
+        {
+            get { lock (sync) { return lastMappedPressure; } }
+        }
+
+        public bool LastTouch
+        {
+            get { lock (sync) { return lastTouch; } }
+        }
+
+        public bool LastHover
+        {
+            get { lock (sync) { return lastHover; } }
+        }
+
+        public int LastInputAgeMs
+        {
+            get
+            {
+                lock (sync)
+                {
+                    if (lastInputUtc == DateTime.MinValue)
+                    {
+                        return int.MaxValue;
+                    }
+                    double ms = (DateTime.UtcNow - lastInputUtc).TotalMilliseconds;
+                    if (ms > int.MaxValue)
+                    {
+                        return int.MaxValue;
+                    }
+                    return (int)ms;
+                }
+            }
+        }
+
+        public void ReportInput(int rawPressure, int mappedPressure, bool touch, bool hover)
+        {
+            lock (sync)
+            {
+                lastRawPressure = rawPressure;
+                lastMappedPressure = mappedPressure;
+                lastTouch = touch;
+                lastHover = hover;
+                lastInputUtc = DateTime.UtcNow;
+            }
         }
 
         public void SetMouseMode(bool value)

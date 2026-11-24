@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Globalization;
@@ -1467,12 +1467,14 @@ namespace BoogieBoardSync
                         lastPaused = true;
                     }
                     snapshot.Pressure.ResetSmoothing();
+                    runtime.ReportInput(pressure, 0, touch, hover);
                     lastInRange = false;
                     continue;
                 }
                 lastPaused = false;
 
                 int scaledPressure = touch ? snapshot.Pressure.Map(pressure) : 0;
+                runtime.ReportInput(pressure, scaledPressure, touch, hover);
                 if (options.Debug && clock.ElapsedMilliseconds - lastDebugMs > 100)
                 {
                     lastDebugMs = clock.ElapsedMilliseconds;
