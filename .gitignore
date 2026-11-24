@@ -1,0 +1,4 @@
+bin/
+sdk-dump/
+*.zip
+*.pdb
