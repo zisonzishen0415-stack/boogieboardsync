@@ -5,10 +5,12 @@ namespace BoogieBoardSync
 {
     internal sealed class PenInjector : IDisposable
     {
-        private readonly bool mouseMode;
+        private readonly object sync = new object();
+        private bool mouseMode;
         private IntPtr penDevice;
         private bool penFirstContact;
         private bool down;
+        private bool rightDown;
         private bool inRange;
         private bool lastSide;
         private int lastX;
@@ -20,120 +22,153 @@ namespace BoogieBoardSync
         public PenInjector(bool useMouse)
         {
             mouseMode = useMouse;
-            if (!mouseMode)
+            EnsurePenDevice();
+            if (penDevice == IntPtr.Zero)
             {
-                penDevice = NativeMethods.CreateSyntheticPointerDevice(
-                    NativeMethods.PT_PEN,
-                    1,
-                    NativeMethods.POINTER_INPUT_MODE_ABSOLUTE);
-
-                if (penDevice == IntPtr.Zero)
-                {
-                    Console.WriteLine("WARN: CreateSyntheticPointerDevice failed (error {0}); falling back to mouse injection.",
-                        Marshal.GetLastWin32Error());
-                    mouseMode = true;
-                }
+                Console.WriteLine("WARN: CreateSyntheticPointerDevice failed (error {0}); using mouse injection.",
+                    Marshal.GetLastWin32Error());
+                mouseMode = true;
             }
         }
 
         public string ModeName
         {
-            get { return mouseMode ? "mouse" : "pen"; }
+            get
+            {
+                lock (sync)
+                {
+                    return mouseMode ? "mouse" : "pen";
+                }
+            }
         }
 
         public int InjectedCount
         {
-            get { return injectedCount; }
+            get { lock (sync) { return injectedCount; } }
         }
 
         public int FailedCount
         {
-            get { return failedCount; }
+            get { lock (sync) { return failedCount; } }
+        }
+
+        public void SetMouseMode(bool useMouse)
+        {
+            lock (sync)
+            {
+                if (mouseMode == useMouse)
+                {
+                    return;
+                }
+
+                if (!useMouse)
+                {
+                    EnsurePenDevice();
+                    if (penDevice == IntPtr.Zero)
+                    {
+                        return;
+                    }
+                }
+
+                ReleaseInternal();
+                mouseMode = useMouse;
+            }
         }
 
         public void Update(NativeMethods.POINT point, int pressure, bool isDown, bool hover, bool side)
         {
-            pressure = Clamp(pressure, 0, 1024);
-
-            if (mouseMode)
+            lock (sync)
             {
-                UpdateMouse(point, isDown);
-                inRange = hover || isDown;
+                pressure = Clamp(pressure, 0, 1024);
+
+                if (mouseMode)
+                {
+                    UpdateMouse(point, isDown, side);
+                    inRange = hover || isDown;
+                    lastX = point.X;
+                    lastY = point.Y;
+                    lastPressure = pressure;
+                    lastSide = side;
+                    return;
+                }
+
+                if (isDown)
+                {
+                    uint flags = NativeMethods.POINTER_FLAG_INRANGE
+                        | NativeMethods.POINTER_FLAG_INCONTACT
+                        | NativeMethods.POINTER_FLAG_PRIMARY
+                        | NativeMethods.POINTER_FLAG_CONFIDENCE
+                        | NativeMethods.POINTER_FLAG_FIRSTBUTTON
+                        | NativeMethods.POINTER_FLAG_UPDATE;
+
+                    if (!down)
+                    {
+                        flags |= NativeMethods.POINTER_FLAG_DOWN;
+                        if (!penFirstContact)
+                        {
+                            flags |= NativeMethods.POINTER_FLAG_NEW;
+                            penFirstContact = true;
+                        }
+                    }
+
+                    InjectPen(point, pressure, flags, side);
+                    down = true;
+                    inRange = true;
+                }
+                else
+                {
+                    bool wasDown = down;
+                    if (down)
+                    {
+                        uint upFlags = NativeMethods.POINTER_FLAG_INRANGE
+                            | NativeMethods.POINTER_FLAG_PRIMARY
+                            | NativeMethods.POINTER_FLAG_CONFIDENCE
+                            | NativeMethods.POINTER_FLAG_UP;
+                        InjectPen(point, 0, upFlags, false);
+                        down = false;
+                    }
+
+                    if (hover)
+                    {
+                        uint hoverFlags = NativeMethods.POINTER_FLAG_INRANGE
+                            | NativeMethods.POINTER_FLAG_PRIMARY
+                            | NativeMethods.POINTER_FLAG_CONFIDENCE
+                            | NativeMethods.POINTER_FLAG_UPDATE;
+                        if (!inRange && !wasDown)
+                        {
+                            hoverFlags |= NativeMethods.POINTER_FLAG_NEW;
+                        }
+                        InjectPen(point, 0, hoverFlags, side);
+                    }
+                    else if (inRange)
+                    {
+                        uint leaveFlags = NativeMethods.POINTER_FLAG_INRANGE
+                            | NativeMethods.POINTER_FLAG_PRIMARY
+                            | NativeMethods.POINTER_FLAG_CONFIDENCE
+                            | NativeMethods.POINTER_FLAG_UP;
+                        InjectPen(point, 0, leaveFlags, false);
+                        penFirstContact = false;
+                    }
+
+                    inRange = hover;
+                }
+
                 lastX = point.X;
                 lastY = point.Y;
                 lastPressure = pressure;
                 lastSide = side;
-                return;
             }
-
-            if (isDown)
-            {
-                uint flags = NativeMethods.POINTER_FLAG_INRANGE
-                    | NativeMethods.POINTER_FLAG_INCONTACT
-                    | NativeMethods.POINTER_FLAG_PRIMARY
-                    | NativeMethods.POINTER_FLAG_CONFIDENCE
-                    | NativeMethods.POINTER_FLAG_FIRSTBUTTON
-                    | NativeMethods.POINTER_FLAG_UPDATE;
-
-                if (!down)
-                {
-                    flags |= NativeMethods.POINTER_FLAG_DOWN;
-                    if (!penFirstContact)
-                    {
-                        flags |= NativeMethods.POINTER_FLAG_NEW;
-                        penFirstContact = true;
-                    }
-                }
-
-                InjectPen(point, pressure, flags, side);
-                down = true;
-                inRange = true;
-            }
-            else
-            {
-                bool wasDown = down;
-                if (down)
-                {
-                    uint upFlags = NativeMethods.POINTER_FLAG_INRANGE
-                        | NativeMethods.POINTER_FLAG_PRIMARY
-                        | NativeMethods.POINTER_FLAG_CONFIDENCE
-                        | NativeMethods.POINTER_FLAG_UP;
-                    InjectPen(point, 0, upFlags, false);
-                    down = false;
-                }
-
-                if (hover)
-                {
-                    uint hoverFlags = NativeMethods.POINTER_FLAG_INRANGE
-                        | NativeMethods.POINTER_FLAG_PRIMARY
-                        | NativeMethods.POINTER_FLAG_CONFIDENCE
-                        | NativeMethods.POINTER_FLAG_UPDATE;
-                    if (!inRange && !wasDown)
-                    {
-                        hoverFlags |= NativeMethods.POINTER_FLAG_NEW;
-                    }
-                    InjectPen(point, 0, hoverFlags, side);
-                }
-                else if (inRange && !wasDown)
-                {
-                    uint leaveFlags = NativeMethods.POINTER_FLAG_INRANGE
-                        | NativeMethods.POINTER_FLAG_PRIMARY
-                        | NativeMethods.POINTER_FLAG_CONFIDENCE
-                        | NativeMethods.POINTER_FLAG_UP;
-                    InjectPen(point, 0, leaveFlags, false);
-                    penFirstContact = false;
-                }
-
-                inRange = hover;
-            }
-
-            lastX = point.X;
-            lastY = point.Y;
-            lastPressure = pressure;
-            lastSide = side;
         }
 
         public void Release()
+        {
+            lock (sync)
+            {
+                ReleaseInternal();
+            }
+        }
+
+        private void ReleaseInternal()
         {
             if (mouseMode)
             {
@@ -142,10 +177,15 @@ namespace BoogieBoardSync
                     SendMouseButton(NativeMethods.MOUSEEVENTF_LEFTUP);
                     down = false;
                 }
+                if (rightDown)
+                {
+                    SendMouseButton(NativeMethods.MOUSEEVENTF_RIGHTUP);
+                    rightDown = false;
+                }
                 return;
             }
 
-            if (down)
+            if (down || inRange)
             {
                 NativeMethods.POINT point = new NativeMethods.POINT(lastX, lastY);
                 uint flags = NativeMethods.POINTER_FLAG_INRANGE
@@ -153,24 +193,33 @@ namespace BoogieBoardSync
                     | NativeMethods.POINTER_FLAG_CONFIDENCE
                     | NativeMethods.POINTER_FLAG_UP;
                 InjectPen(point, 0, flags, false);
-                down = false;
             }
 
-            if (inRange)
+            down = false;
+            inRange = false;
+            penFirstContact = false;
+        }
+
+        private void EnsurePenDevice()
+        {
+            if (penDevice != IntPtr.Zero)
             {
-                NativeMethods.POINT point = new NativeMethods.POINT(lastX, lastY);
-                uint flags = NativeMethods.POINTER_FLAG_INRANGE
-                    | NativeMethods.POINTER_FLAG_PRIMARY
-                    | NativeMethods.POINTER_FLAG_CONFIDENCE
-                    | NativeMethods.POINTER_FLAG_UP;
-                InjectPen(point, 0, flags, false);
-                inRange = false;
-                penFirstContact = false;
+                return;
             }
+            penDevice = NativeMethods.CreateSyntheticPointerDevice(
+                NativeMethods.PT_PEN,
+                1,
+                NativeMethods.POINTER_INPUT_MODE_ABSOLUTE);
         }
 
         private void InjectPen(NativeMethods.POINT point, int pressure, uint flags, bool side)
         {
+            if (penDevice == IntPtr.Zero)
+            {
+                failedCount++;
+                return;
+            }
+
             NativeMethods.POINTER_TYPE_INFO info = new NativeMethods.POINTER_TYPE_INFO();
             info.type = NativeMethods.PT_PEN;
             info.penInfo.pointerInfo.pointerType = NativeMethods.PT_PEN;
@@ -201,9 +250,22 @@ namespace BoogieBoardSync
             }
         }
 
-        private void UpdateMouse(NativeMethods.POINT point, bool isDown)
+        private void UpdateMouse(NativeMethods.POINT point, bool isDown, bool side)
         {
             NativeMethods.SetCursorPos(point.X, point.Y);
+
+            if (side && !rightDown)
+            {
+                SendMouseButton(NativeMethods.MOUSEEVENTF_RIGHTDOWN);
+                rightDown = true;
+                injectedCount++;
+            }
+            else if (!side && rightDown)
+            {
+                SendMouseButton(NativeMethods.MOUSEEVENTF_RIGHTUP);
+                rightDown = false;
+                injectedCount++;
+            }
 
             if (isDown && !down)
             {
@@ -246,11 +308,14 @@ namespace BoogieBoardSync
 
         public void Dispose()
         {
-            Release();
-            if (penDevice != IntPtr.Zero)
+            lock (sync)
             {
-                NativeMethods.DestroySyntheticPointerDevice(penDevice);
-                penDevice = IntPtr.Zero;
+                ReleaseInternal();
+                if (penDevice != IntPtr.Zero)
+                {
+                    NativeMethods.DestroySyntheticPointerDevice(penDevice);
+                    penDevice = IntPtr.Zero;
+                }
             }
         }
 
@@ -258,7 +323,11 @@ namespace BoogieBoardSync
         {
             get
             {
-                return string.Format("x={0} y={1} p={2} down={3} hover={4} side={5}", lastX, lastY, lastPressure, down, inRange, lastSide);
+                lock (sync)
+                {
+                    return string.Format("x={0} y={1} p={2} down={3} hover={4} side={5} mouse={6}",
+                        lastX, lastY, lastPressure, down, inRange, lastSide, mouseMode);
+                }
             }
         }
     }

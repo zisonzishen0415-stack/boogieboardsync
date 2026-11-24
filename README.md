@@ -17,7 +17,10 @@ Windows 用户态驱动，把 **Boogie Board Sync 9.7**（USB 名称 `Improv Syn
 .\build.ps1
 ```
 
-生成 `bin\BoogieBoardSync.exe`，单文件，无第三方依赖。
+生成两个无第三方依赖的程序：
+
+- `bin\BoogieBoardSync.exe`：控制台版，用于诊断和调试。
+- `bin\BoogieBoardSyncTray.exe`：无窗口托盘版，用于日常输入。
 
 ## 首次使用
 
@@ -30,19 +33,67 @@ Windows 用户态驱动，把 **Boogie Board Sync 9.7**（USB 名称 `Improv Syn
 
 `--doctor` 会依次检查 HID 集合、读取 feature 5、释放 U 盘卷、发送日期/主机类型握手，并尝试 `DIGITIZER(3)`、`CAPTURE(4)`、`FILE(5)` 三种模式。
 
-3. 看到 `PASS: device accepted mode 3` 后，启动驱动：
+3. 看到 `PASS: device accepted mode 3` 后，日常使用启动托盘版：
+
+```powershell
+.\bin\BoogieBoardSyncTray.exe
+```
+
+4. 用笔在板子上画。默认是 `digitizer` 模式（3），压感会传给当前应用。
+
+控制台版仍然可用：
 
 ```powershell
 .\bin\BoogieBoardSync.exe
 ```
-
-4. 用笔在板子上画。默认是 `digitizer` 模式（3），压感会传给当前应用。
 
 如果设备仍停留在 U 盘模式，程序默认会自动弹出它的卷。自动识别只接受包含 `SYNC` 目录或卷标中含 `BOOGIE`/`SYNC` 的卷，避免误弹其他 U 盘；如果板子的卷没有这些特征，请手动指定盘符：
 
 ```powershell
 .\bin\BoogieBoardSync.exe --eject=D --set-mode=3
 ```
+
+## 托盘版
+
+`BoogieBoardSyncTray.exe` 启动后常驻系统托盘，不显示控制台窗口。托盘菜单可以：
+
+- 暂停/恢复输入
+- 在 Windows Ink 数位板和鼠标之间即时切换
+- 旋转 0/90/180/270 度
+- 映射到全部屏幕或指定显示器
+- 切换柔和、线性、硬朗力度曲线
+- 开启开机自动启动
+- 打开设置文件夹
+
+全局热键：
+
+```text
+Ctrl+Alt+P  暂停/恢复
+Ctrl+Alt+M  数位板/鼠标切换
+Ctrl+Alt+R  旋转 90 度
+```
+
+设置保存在：
+
+```text
+%LOCALAPPDATA%\BoogieBoardSync\settings.ini
+```
+
+鼠标模式使用绝对坐标移动，侧键映射为鼠标右键。
+
+## 力度映射
+
+驱动读取输入报文中的 16 位原始力度值，再转换成 Windows Ink 的 `0..1024` 压感。默认是线性映射，不增加延迟。
+
+```text
+--pressure-min=0       原始力度下限
+--pressure-max=1023    原始力度上限
+--pressure-curve=soft|linear|firm|N
+--pressure-deadzone=0  忽略低于该比例的力度
+--pressure-smoothing=0 力度平滑，默认关闭
+```
+
+如果需要校准，先用 `--probe` 画轻、中、重三组笔迹，观察 `pressure` 的稳定范围，再把范围填入 `--pressure-min` / `--pressure-max`。托盘版可以即时切换柔和、线性、硬朗三种曲线。
 
 ## 常用参数
 
@@ -61,8 +112,13 @@ Windows 用户态驱动，把 **Boogie Board Sync 9.7**（USB 名称 `Improv Syn
 --flip-x / --flip-y 镜像坐标轴
 --raw-max=20280x13942  原始坐标最大值，可按实测校准
 --raw-min=0x0       原始坐标最小值
---pressure-max=1023 原始压感最大值
---debug             打印原始报文和注入状态
+--screen=all|1      映射全部屏幕或第 1 个显示器
+--pressure-min=0    原始力度下限
+--pressure-max=1023 原始力度上限
+--pressure-curve=linear  soft / linear / firm / gamma
+--pressure-deadzone=0   力度死区，0.0..0.95
+--pressure-smoothing=0  力度平滑，0.0..0.95，默认关闭
+--debug             打印原始报文和映射后的力度
 --no-tablet-mode    不主动切换模式（已用官方软件切好时使用）
 --help              查看全部参数
 ```
@@ -137,8 +193,10 @@ Linux 社区驱动参考：
 
 - Windows Ink 手写笔注入：已实测通过（`--test` 注入 6 次失败 0）。
 - 鼠标回退注入：已实测通过（`--test --mouse`）。
-- 报文解析、压感换算、坐标映射：已通过 `--selftest`。
-- 模式切换：已按官方 Android/iOS SDK 和 Linux 驱动实现，并加入多种写入策略；本机测试时设备中途从 USB 掉线，尚未完成 Windows 真机回归。
+- 报文解析、力度曲线、坐标映射：已通过 `--selftest`。
+- 模式切换：已在真机验证，feature 5 读回 `03`，OneNote 中可观察到压感。
+- 托盘版：全局热键注册成功；暂停、数位板/鼠标切换、旋转回调与配置持久化已通过运行验证。
+- 鼠标回退与侧键右键映射：已通过注入测试。
 - 官方 SDK 从不读取 feature 5 的模式值，因此部分固件可能让 feature 5 一直读回 `01`。请以 `--verify` 是否收到真实输入报文为准，而不是只看读回值。
 
 ## 已知限制
@@ -149,4 +207,4 @@ Linux 社区驱动参考：
 - 如果设备从 USB 上消失，优先检查电量/USB 线；驱动会自动等待并重连。
 - Windows 的 `COL01` 笔集合由系统独占，因此不能直接读取它；我们读取 `COL02`。
 - 侧键映射为手写笔第二按键，不同应用的行为可能不同。
-- 压感范围不同批次可能需要用 `--pressure-max` 校准。
+- 压感范围不同批次可能需要用 `--pressure-min` / `--pressure-max` 校准；托盘版提供柔和、线性、硬朗三种曲线。

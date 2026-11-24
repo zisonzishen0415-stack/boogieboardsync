@@ -17,6 +17,16 @@ namespace BoogieBoardSync
         private readonly int screenHeight;
 
         public TabletMapper(Options options)
+            : this(
+                options,
+                NativeMethods.GetSystemMetrics(NativeMethods.SM_XVIRTUALSCREEN),
+                NativeMethods.GetSystemMetrics(NativeMethods.SM_YVIRTUALSCREEN),
+                NativeMethods.GetSystemMetrics(NativeMethods.SM_CXVIRTUALSCREEN),
+                NativeMethods.GetSystemMetrics(NativeMethods.SM_CYVIRTUALSCREEN))
+        {
+        }
+
+        public TabletMapper(Options options, int left, int top, int width, int height)
         {
             rawMinX = options.RawMinX;
             rawMaxX = options.RawMaxX;
@@ -26,10 +36,10 @@ namespace BoogieBoardSync
             flipX = options.FlipX;
             flipY = options.FlipY;
 
-            screenLeft = NativeMethods.GetSystemMetrics(NativeMethods.SM_XVIRTUALSCREEN);
-            screenTop = NativeMethods.GetSystemMetrics(NativeMethods.SM_YVIRTUALSCREEN);
-            screenWidth = NativeMethods.GetSystemMetrics(NativeMethods.SM_CXVIRTUALSCREEN);
-            screenHeight = NativeMethods.GetSystemMetrics(NativeMethods.SM_CYVIRTUALSCREEN);
+            screenLeft = left;
+            screenTop = top;
+            screenWidth = width;
+            screenHeight = height;
         }
 
         public NativeMethods.POINT Map(int rawX, int rawY)

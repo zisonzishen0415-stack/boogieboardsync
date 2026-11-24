@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Globalization;
 using System.Runtime.InteropServices;
 using System.Threading;
 
@@ -34,6 +35,7 @@ namespace BoogieBoardSync
         public bool Mouse;
         public bool Debug;
         public bool Help;
+        public bool Tray;
         public bool NoTabletMode;
         public int Rotate;
         public bool FlipX;
@@ -42,9 +44,14 @@ namespace BoogieBoardSync
         public int RawMaxX = 20280;
         public int RawMinY = 0;
         public int RawMaxY = 13942;
+        public int PressureMin = 0;
         public int PressureMax = 1023;
+        public double PressureGamma = 1.0;
+        public double PressureDeadzone = 0.0;
+        public double PressureSmoothing = 0.0;
         public int DurationSeconds = 15;
         public string Collection = "auto";
+        public int ScreenIndex = -1;
 
         public static Options Parse(string[] args)
         {
@@ -165,6 +172,10 @@ namespace BoogieBoardSync
                 {
                     options.NoTabletMode = true;
                 }
+                else if (arg == "--tray")
+                {
+                    options.Tray = true;
+                }
                 else if (arg == "--flip-x")
                 {
                     options.FlipX = true;
@@ -209,6 +220,50 @@ namespace BoogieBoardSync
                         throw new ArgumentException("--pressure-max must be greater than zero");
                     }
                 }
+                else if (arg.StartsWith("--pressure-min=", StringComparison.OrdinalIgnoreCase))
+                {
+                    options.PressureMin = Math.Max(0, ParseInt(Value(arg), options.PressureMin));
+                }
+                else if (arg.StartsWith("--pressure-curve=", StringComparison.OrdinalIgnoreCase))
+                {
+                    string curve = Value(arg).ToLowerInvariant();
+                    if (curve == "soft")
+                    {
+                        options.PressureGamma = 0.70;
+                    }
+                    else if (curve == "linear")
+                    {
+                        options.PressureGamma = 1.00;
+                    }
+                    else if (curve == "firm")
+                    {
+                        options.PressureGamma = 1.40;
+                    }
+                    else
+                    {
+                        options.PressureGamma = ParseDouble(curve, options.PressureGamma);
+                    }
+                    if (options.PressureGamma < 0.1 || options.PressureGamma > 4.0)
+                    {
+                        throw new ArgumentException("--pressure-curve must be soft, linear, firm, or 0.1..4.0");
+                    }
+                }
+                else if (arg.StartsWith("--pressure-deadzone=", StringComparison.OrdinalIgnoreCase))
+                {
+                    options.PressureDeadzone = ParseDouble(Value(arg), options.PressureDeadzone);
+                    if (options.PressureDeadzone < 0.0 || options.PressureDeadzone > 0.95)
+                    {
+                        throw new ArgumentException("--pressure-deadzone must be 0.0..0.95");
+                    }
+                }
+                else if (arg.StartsWith("--pressure-smoothing=", StringComparison.OrdinalIgnoreCase))
+                {
+                    options.PressureSmoothing = ParseDouble(Value(arg), options.PressureSmoothing);
+                    if (options.PressureSmoothing < 0.0 || options.PressureSmoothing > 0.95)
+                    {
+                        throw new ArgumentException("--pressure-smoothing must be 0.0..0.95");
+                    }
+                }
                 else if (arg.StartsWith("--duration=", StringComparison.OrdinalIgnoreCase))
                 {
                     options.DurationSeconds = Math.Max(1, ParseInt(Value(arg), options.DurationSeconds));
@@ -216,6 +271,23 @@ namespace BoogieBoardSync
                 else if (arg.StartsWith("--collection=", StringComparison.OrdinalIgnoreCase))
                 {
                     options.Collection = Value(arg).ToLowerInvariant();
+                }
+                else if (arg.StartsWith("--screen=", StringComparison.OrdinalIgnoreCase))
+                {
+                    string screen = Value(arg).ToLowerInvariant();
+                    if (screen == "all" || screen == "0")
+                    {
+                        options.ScreenIndex = -1;
+                    }
+                    else
+                    {
+                        int number = ParseInt(screen, 0);
+                        if (number < 1)
+                        {
+                            throw new ArgumentException("--screen must be all or a monitor number starting at 1");
+                        }
+                        options.ScreenIndex = number - 1;
+                    }
                 }
                 else
                 {
@@ -238,6 +310,12 @@ namespace BoogieBoardSync
             return int.TryParse(text, out value) ? value : fallback;
         }
 
+        private static double ParseDouble(string text, double fallback)
+        {
+            double value;
+            return double.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out value) ? value : fallback;
+        }
+
         internal static bool IsSupportedMode(int mode)
         {
             return mode == 1 || mode == 3 || mode == 4 || mode == 5;
@@ -249,7 +327,17 @@ namespace BoogieBoardSync
         private static volatile HidDevice currentDevice;
         private static volatile bool stopRequested;
 
-        private static int Main(string[] args)
+        internal static void RequestStop()
+        {
+            stopRequested = true;
+            HidDevice device = currentDevice;
+            if (device != null)
+            {
+                device.CancelRead();
+            }
+        }
+
+        public static int Main(string[] args)
         {
             Options options;
             try
@@ -901,9 +989,33 @@ namespace BoogieBoardSync
 
             failures = Check(ParseSyncMode(new byte[] { 5, 5, 0, 4, 0, 0, 0 }) == 4, "parse mode feature", failures);
             failures = Check(ParseSyncMode(new byte[] { 5, 0, 3 }) == 3, "parse mode without id", failures);
-            failures = Check(ScalePressure(0, 1023) == 0, "scale pressure 0", failures);
-            failures = Check(ScalePressure(1023, 1023) == 1024, "scale pressure max", failures);
-            failures = Check(ScalePressure(512, 1023) >= 500 && ScalePressure(512, 1023) <= 520, "scale pressure mid", failures);
+            PressureMapper linear = new PressureMapper(0, 1023, 1.0, 0.0, 0.0);
+            failures = Check(linear.Map(0) == 0, "pressure linear min", failures);
+            failures = Check(linear.Map(1023) == 1024, "pressure linear max", failures);
+            failures = Check(linear.Map(512) >= 500 && linear.Map(512) <= 520, "pressure linear mid", failures);
+
+            PressureMapper soft = new PressureMapper(0, 1023, 0.70, 0.0, 0.0);
+            PressureMapper firm = new PressureMapper(0, 1023, 1.40, 0.0, 0.0);
+            failures = Check(soft.Map(512) > linear.Map(512), "pressure soft curve", failures);
+            failures = Check(firm.Map(512) < linear.Map(512), "pressure firm curve", failures);
+
+            PressureMapper dead = new PressureMapper(0, 1023, 1.0, 0.5, 0.0);
+            failures = Check(dead.Map(400) == 0, "pressure dead zone", failures);
+            failures = Check(dead.Map(1023) == 1024, "pressure dead zone max", failures);
+
+            PressureMapper ranged = new PressureMapper(100, 900, 1.0, 0.0, 0.0);
+            failures = Check(ranged.Map(50) == 0, "pressure calibrated min", failures);
+            failures = Check(ranged.Map(100) == 0, "pressure calibrated floor", failures);
+            failures = Check(ranged.Map(900) == 1024, "pressure calibrated max", failures);
+
+            PressureMapper smooth = new PressureMapper(0, 1023, 1.0, 0.0, 0.5);
+            int firstSmooth = smooth.Map(1023);
+            int secondSmooth = smooth.Map(1023);
+            smooth.ResetSmoothing();
+            int resetSmooth = smooth.Map(1023);
+            failures = Check(firstSmooth == 512, "pressure smoothing first", failures);
+            failures = Check(secondSmooth > firstSmooth, "pressure smoothing rise", failures);
+            failures = Check(resetSmooth == 512, "pressure smoothing reset", failures);
 
             if (failures == 0)
             {
@@ -1221,24 +1333,26 @@ namespace BoogieBoardSync
         }
         private static int RunDriver(Options options)
         {
-            TabletMapper mapper = new TabletMapper(options);
-            Console.WriteLine(mapper.Describe());
+            return RunDriver(options, new DriverRuntime(options));
+        }
+
+        internal static int RunDriver(Options options, DriverRuntime runtime)
+        {
+            Console.WriteLine(runtime.Current.Mapper.Describe());
 
             using (PenInjector injector = new PenInjector(options.Mouse))
             {
                 Console.WriteLine("Injection mode: {0}", injector.ModeName);
                 Console.WriteLine("Press Ctrl+C to stop.");
 
-                Console.CancelKeyPress += delegate(object sender, ConsoleCancelEventArgs e)
+                if (NativeMethods.GetConsoleWindow() != IntPtr.Zero)
                 {
-                    e.Cancel = true;
-                    stopRequested = true;
-                    HidDevice device = currentDevice;
-                    if (device != null)
+                    Console.CancelKeyPress += delegate(object sender, ConsoleCancelEventArgs e)
                     {
-                        device.CancelRead();
-                    }
-                };
+                        e.Cancel = true;
+                        RequestStop();
+                    };
+                }
 
                 while (!stopRequested)
                 {
@@ -1271,7 +1385,7 @@ namespace BoogieBoardSync
                         }
                     }
 
-                    ReadReports(target, mapper, injector, options);
+                    ReadReports(target, runtime, injector, options);
                     injector.Release();
                     currentDevice = null;
                     target.Dispose();
@@ -1287,12 +1401,15 @@ namespace BoogieBoardSync
             return 0;
         }
 
-        private static void ReadReports(HidDevice device, TabletMapper mapper, PenInjector injector, Options options)
+        private static void ReadReports(HidDevice device, DriverRuntime runtime, PenInjector injector, Options options)
         {
             byte[] buffer = new byte[Math.Max(64, (int)device.InputReportByteLength)];
             int reports = 0;
             int parsedReports = 0;
             bool lastInRange = false;
+            bool lastPaused = false;
+            bool hasMouseMode = false;
+            bool lastMouseMode = false;
             Stopwatch clock = Stopwatch.StartNew();
             long lastDebugMs = -1000;
 
@@ -1334,22 +1451,44 @@ namespace BoogieBoardSync
                 }
 
                 parsedReports++;
+                DriverRuntime.Snapshot snapshot = runtime.Current;
+                if (!hasMouseMode || lastMouseMode != snapshot.MouseMode)
+                {
+                    injector.SetMouseMode(snapshot.MouseMode);
+                    lastMouseMode = snapshot.MouseMode;
+                    hasMouseMode = true;
+                }
+
+                if (snapshot.Paused)
+                {
+                    if (!lastPaused)
+                    {
+                        injector.Release();
+                        lastPaused = true;
+                    }
+                    snapshot.Pressure.ResetSmoothing();
+                    lastInRange = false;
+                    continue;
+                }
+                lastPaused = false;
+
+                int scaledPressure = touch ? snapshot.Pressure.Map(pressure) : 0;
                 if (options.Debug && clock.ElapsedMilliseconds - lastDebugMs > 100)
                 {
                     lastDebugMs = clock.ElapsedMilliseconds;
-                    Console.WriteLine("raw x={0} y={1} p={2} touch={3} hover={4} side={5} bytes={6}",
-                        x, y, pressure, touch, hover, side, Hex(buffer, 0, count));
+                    Console.WriteLine("raw x={0} y={1} p={2}->{3} touch={4} hover={5} side={6} mouse={7} bytes={8}",
+                        x, y, pressure, scaledPressure, touch, hover, side, snapshot.MouseMode, Hex(buffer, 0, count));
                 }
 
                 if (touch || hover)
                 {
-                    int scaledPressure = touch ? ScalePressure(pressure, options.PressureMax) : 0;
-                    injector.Update(mapper.Map(x, y), scaledPressure, touch, hover, side);
+                    injector.Update(snapshot.Mapper.Map(x, y), scaledPressure, touch, hover, side);
                     lastInRange = true;
                 }
                 else if (lastInRange)
                 {
-                    injector.Update(mapper.Map(x, y), 0, false, false, false);
+                    injector.Update(snapshot.Mapper.Map(x, y), 0, false, false, false);
+                    snapshot.Pressure.ResetSmoothing();
                     lastInRange = false;
                 }
             }
@@ -1656,16 +1795,6 @@ namespace BoogieBoardSync
             return true;
         }
 
-        private static int ScalePressure(int raw, int maximum)
-        {
-            if (maximum <= 0)
-            {
-                maximum = 1023;
-            }
-            double value = Math.Min(1.0, Math.Max(0.0, raw / (double)maximum));
-            return (int)Math.Round(value * 1024.0);
-        }
-
         private static string Hex(byte[] buffer, int offset, int count)
         {
             if (count <= 0)
@@ -1685,7 +1814,7 @@ namespace BoogieBoardSync
             }
         }
 
-        private static void EnableDpiAwareness()
+        internal static void EnableDpiAwareness()
         {
             try
             {
@@ -1730,7 +1859,12 @@ namespace BoogieBoardSync
             Console.WriteLine("  --flip-x / --flip-y     Mirror an axis");
             Console.WriteLine("  --raw-max=WxH           Raw tablet maximum, default 20280x13942");
             Console.WriteLine("  --raw-min=XxY           Raw tablet minimum, default 0x0");
-            Console.WriteLine("  --pressure-max=N        Raw pressure maximum, default 1023");
+            Console.WriteLine("  --screen=all|N          Map to all screens or monitor N (1-based)");
+            Console.WriteLine("  --pressure-min=N        Raw pressure floor, default 0");
+            Console.WriteLine("  --pressure-max=N        Raw pressure ceiling, default 1023");
+            Console.WriteLine("  --pressure-curve=C      soft, linear, firm, or gamma 0.1..4.0");
+            Console.WriteLine("  --pressure-deadzone=N   Ignore normalized pressure below N, 0.0..0.95");
+            Console.WriteLine("  --pressure-smoothing=N  Pressure smoothing 0.0..0.95, default 0 (off)");
             Console.WriteLine("  --duration=N            Probe duration in seconds, default 15");
             Console.WriteLine("  --collection=NAME       auto, vendor or pen");
             Console.WriteLine("  --no-tablet-mode        Do not switch the device mode automatically");

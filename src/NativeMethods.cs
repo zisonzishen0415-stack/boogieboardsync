@@ -44,6 +44,11 @@ namespace BoogieBoardSync
         public const int SM_CYVIRTUALSCREEN = 79;
 
         public const int ERROR_OPERATION_ABORTED = 995;
+        public const int WM_HOTKEY = 0x0312;
+        public const uint MOD_ALT = 0x0001;
+        public const uint MOD_CONTROL = 0x0002;
+        public const uint MOD_SHIFT = 0x0004;
+        public const uint MOD_NOREPEAT = 0x4000;
         public const uint IOCTL_HID_SET_FEATURE = 0x000B0197;
         public const uint IOCTL_STORAGE_EJECT_MEDIA = 0x002D4808;
         public const uint FSCTL_LOCK_VOLUME = 0x00090018;
@@ -268,6 +273,9 @@ namespace BoogieBoardSync
         [DllImport("kernel32.dll", SetLastError = true)]
         public static extern bool CloseHandle(IntPtr handle);
 
+        [DllImport("kernel32.dll")]
+        public static extern IntPtr GetConsoleWindow();
+
         [DllImport("kernel32.dll", SetLastError = true)]
         public static extern bool ReadFile(IntPtr file, byte[] buffer, uint bytesToRead, out uint bytesRead, IntPtr overlapped);
 
@@ -317,5 +325,11 @@ namespace BoogieBoardSync
 
         [DllImport("user32.dll", SetLastError = true)]
         public static extern bool GetCursorPos(out POINT point);
+
+        [DllImport("user32.dll", SetLastError = true)]
+        public static extern bool RegisterHotKey(IntPtr hWnd, int id, uint fsModifiers, uint vk);
+
+        [DllImport("user32.dll", SetLastError = true)]
+        public static extern bool UnregisterHotKey(IntPtr hWnd, int id);
     }
 }
