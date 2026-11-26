@@ -8,38 +8,62 @@ namespace BoogieBoardSync
         private readonly int rawMaxX;
         private readonly int rawMinY;
         private readonly int rawMaxY;
+        private readonly double rawWidth;
+        private readonly double rawHeight;
         private readonly int rotate;
         private readonly bool flipX;
         private readonly bool flipY;
-        private readonly int screenLeft;
-        private readonly int screenTop;
-        private readonly int screenWidth;
-        private readonly int screenHeight;
+        private readonly int drawLeft;
+        private readonly int drawTop;
+        private readonly int drawWidth;
+        private readonly int drawHeight;
+        private readonly string fit;
 
-        public TabletMapper(Options options)
-            : this(
-                options,
-                NativeMethods.GetSystemMetrics(NativeMethods.SM_XVIRTUALSCREEN),
-                NativeMethods.GetSystemMetrics(NativeMethods.SM_YVIRTUALSCREEN),
-                NativeMethods.GetSystemMetrics(NativeMethods.SM_CXVIRTUALSCREEN),
-                NativeMethods.GetSystemMetrics(NativeMethods.SM_CYVIRTUALSCREEN))
+        public TabletMapper(
+            int rawMinX, int rawMaxX, int rawMinY, int rawMaxY,
+            int rotate, bool flipX, bool flipY,
+            int left, int top, int width, int height, string fit)
         {
+            this.rawMinX = rawMinX;
+            this.rawMaxX = rawMaxX;
+            this.rawMinY = rawMinY;
+            this.rawMaxY = rawMaxY;
+            this.rawWidth = Math.Max(1, rawMaxX - rawMinX);
+            this.rawHeight = Math.Max(1, rawMaxY - rawMinY);
+            this.rotate = rotate;
+            this.flipX = flipX;
+            this.flipY = flipY;
+            this.fit = fit ?? "stretch";
+
+            int contentWidth = Math.Max(1, width);
+            int contentHeight = Math.Max(1, height);
+            if (this.fit == "uniform")
+            {
+                double aspect = ContentAspect;
+                if (contentWidth / (double)contentHeight > aspect)
+                {
+                    contentWidth = Math.Max(1, (int)Math.Round(contentHeight * aspect));
+                }
+                else
+                {
+                    contentHeight = Math.Max(1, (int)Math.Round(contentWidth / aspect));
+                }
+            }
+
+            drawLeft = left + (width - contentWidth) / 2;
+            drawTop = top + (height - contentHeight) / 2;
+            drawWidth = contentWidth;
+            drawHeight = contentHeight;
         }
 
-        public TabletMapper(Options options, int left, int top, int width, int height)
+        private double ContentAspect
         {
-            rawMinX = options.RawMinX;
-            rawMaxX = options.RawMaxX;
-            rawMinY = options.RawMinY;
-            rawMaxY = options.RawMaxY;
-            rotate = options.Rotate;
-            flipX = options.FlipX;
-            flipY = options.FlipY;
-
-            screenLeft = left;
-            screenTop = top;
-            screenWidth = width;
-            screenHeight = height;
+            get
+            {
+                return (rotate == 90 || rotate == 270)
+                    ? rawHeight / rawWidth
+                    : rawWidth / rawHeight;
+            }
         }
 
         public NativeMethods.POINT Map(int rawX, int rawY)
@@ -74,15 +98,35 @@ namespace BoogieBoardSync
                 ry = nx;
             }
 
-            int x = screenLeft + (int)Math.Round(rx * Math.Max(0, screenWidth - 1));
-            int y = screenTop + (int)Math.Round(ry * Math.Max(0, screenHeight - 1));
+            if (fit == "fill")
+            {
+                double targetAspect = drawWidth / (double)Math.Max(1, drawHeight);
+                double aspect = ContentAspect;
+                if (aspect > targetAspect)
+                {
+                    double visible = targetAspect / aspect;
+                    double offset = (1.0 - visible) / 2.0;
+                    rx = (rx - offset) / visible;
+                }
+                else
+                {
+                    double visible = aspect / targetAspect;
+                    double offset = (1.0 - visible) / 2.0;
+                    ry = (ry - offset) / visible;
+                }
+                rx = Clamp01(rx);
+                ry = Clamp01(ry);
+            }
+
+            int x = drawLeft + (int)Math.Round(rx * Math.Max(0, drawWidth - 1));
+            int y = drawTop + (int)Math.Round(ry * Math.Max(0, drawHeight - 1));
             return new NativeMethods.POINT(x, y);
         }
 
         public string Describe()
         {
             return string.Format(
-                "tablet raw=({0},{1})-({2},{3}) rotate={4} flipX={5} flipY={6} screen=({7},{8}) {9}x{10}",
+                "tablet raw=({0},{1})-({2},{3}) rotate={4} flipX={5} flipY={6} draw=({7},{8}) {9}x{10} fit={11}",
                 rawMinX,
                 rawMinY,
                 rawMaxX,
@@ -90,10 +134,11 @@ namespace BoogieBoardSync
                 rotate,
                 flipX,
                 flipY,
-                screenLeft,
-                screenTop,
-                screenWidth,
-                screenHeight);
+                drawLeft,
+                drawTop,
+                drawWidth,
+                drawHeight,
+                fit);
         }
 
         private static double Normalize(int value, int min, int max)
@@ -113,6 +158,13 @@ namespace BoogieBoardSync
                 return 1.0;
             }
             return normalized;
+        }
+
+        private static double Clamp01(double value)
+        {
+            if (value < 0.0) return 0.0;
+            if (value > 1.0) return 1.0;
+            return value;
         }
     }
 }

@@ -74,7 +74,7 @@ namespace BoogieBoardSync
                 g,
                 values,
                 Font,
-                new Rectangle(92, 7, Math.Max(40, Width - 210), 20),
+                new Rectangle(92, 7, Math.Max(40, Width - 250), 20),
                 Color.FromArgb(55, 62, 72),
                 TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
 
@@ -82,11 +82,11 @@ namespace BoogieBoardSync
                 g,
                 state,
                 Font,
-                new Rectangle(Math.Max(10, Width - 100), 7, 88, 20),
+                new Rectangle(Math.Max(10, Width - 140), 7, 128, 20),
                 stateColor,
                 TextFormatFlags.Right | TextFormatFlags.VerticalCenter);
 
-            Rectangle bar = new Rectangle(12, 34, Math.Max(10, Width - 24), 20);
+            Rectangle bar = new Rectangle(12, 34, Math.Max(10, Width - 48), 20);
             using (SolidBrush backBrush = new SolidBrush(Color.FromArgb(233, 237, 242)))
             {
                 FillRoundedRectangle(g, backBrush, bar, 8);

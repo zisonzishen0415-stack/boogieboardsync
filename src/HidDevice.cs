@@ -8,6 +8,7 @@ namespace BoogieBoardSync
     internal sealed class HidDevice : IDisposable
     {
         public const ushort BoogieVendorId = 0x2914;
+        public const ushort BoogieBluetoothVendorId = 0x00F3;
         public const ushort BoogieProductId = 0x0100;
 
         private const int HIDP_STATUS_SUCCESS = 0x00110000;

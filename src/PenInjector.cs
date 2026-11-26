@@ -124,7 +124,8 @@ namespace BoogieBoardSync
                             | NativeMethods.POINTER_FLAG_PRIMARY
                             | NativeMethods.POINTER_FLAG_CONFIDENCE
                             | NativeMethods.POINTER_FLAG_UP;
-                        InjectPen(point, 0, upFlags, false);
+                        NativeMethods.POINT upPoint = new NativeMethods.POINT(lastX, lastY);
+                        InjectPen(upPoint, 0, upFlags, false);
                         down = false;
                     }
 
@@ -146,7 +147,8 @@ namespace BoogieBoardSync
                             | NativeMethods.POINTER_FLAG_PRIMARY
                             | NativeMethods.POINTER_FLAG_CONFIDENCE
                             | NativeMethods.POINTER_FLAG_UP;
-                        InjectPen(point, 0, leaveFlags, false);
+                        NativeMethods.POINT leavePoint = new NativeMethods.POINT(lastX, lastY);
+                        InjectPen(leavePoint, 0, leaveFlags, false);
                         penFirstContact = false;
                     }
 
@@ -219,6 +221,9 @@ namespace BoogieBoardSync
                 failedCount++;
                 return;
             }
+
+            point.X -= NativeMethods.GetSystemMetrics(NativeMethods.SM_XVIRTUALSCREEN);
+            point.Y -= NativeMethods.GetSystemMetrics(NativeMethods.SM_YVIRTUALSCREEN);
 
             NativeMethods.POINTER_TYPE_INFO info = new NativeMethods.POINTER_TYPE_INFO();
             info.type = NativeMethods.PT_PEN;

@@ -594,6 +594,7 @@ namespace BoogieBoardSync
                 }
                 if (!SendRaw(keepAlive))
                 {
+                    AppLog.Write("bluetooth keepalive send failed: " + LastErrorText);
                     stopping = true;
                     CloseSocket();
                     break;

@@ -32,11 +32,22 @@ namespace BoogieBoardSync
         private int screenIndex;
         private bool flipX;
         private bool flipY;
+        private int mapX;
+        private int mapY;
+        private int mapWidth;
+        private int mapHeight;
+        private string mapFit = "stretch";
+        private int rawMinX;
+        private int rawMaxX;
+        private int rawMinY;
+        private int rawMaxY;
         private int pressureMin;
         private int pressureMax;
         private double pressureGamma;
         private double pressureDeadzone;
         private double pressureSmoothing;
+        private int lastRawX = -1;
+        private int lastRawY = -1;
         private int lastRawPressure;
         private int lastMappedPressure;
         private bool lastTouch;
@@ -53,6 +64,15 @@ namespace BoogieBoardSync
             screenIndex = options.ScreenIndex;
             flipX = options.FlipX;
             flipY = options.FlipY;
+            mapX = Math.Max(0, options.MapX);
+            mapY = Math.Max(0, options.MapY);
+            mapWidth = Math.Max(0, options.MapWidth);
+            mapHeight = Math.Max(0, options.MapHeight);
+            mapFit = NormalizeMapFit(options.MapFit);
+            rawMinX = Math.Max(0, options.RawMinX);
+            rawMaxX = Math.Max(rawMinX + 1, options.RawMaxX);
+            rawMinY = Math.Max(0, options.RawMinY);
+            rawMaxY = Math.Max(rawMinY + 1, options.RawMaxY);
             pressureMin = options.PressureMin;
             pressureMax = options.PressureMax;
             pressureGamma = options.PressureGamma;
@@ -106,6 +126,51 @@ namespace BoogieBoardSync
             get { lock (sync) { return flipY; } }
         }
 
+        public int MapX
+        {
+            get { lock (sync) { return mapX; } }
+        }
+
+        public int MapY
+        {
+            get { lock (sync) { return mapY; } }
+        }
+
+        public int MapWidth
+        {
+            get { lock (sync) { return mapWidth; } }
+        }
+
+        public int MapHeight
+        {
+            get { lock (sync) { return mapHeight; } }
+        }
+
+        public string MapFit
+        {
+            get { lock (sync) { return mapFit; } }
+        }
+
+        public int RawMinX
+        {
+            get { lock (sync) { return rawMinX; } }
+        }
+
+        public int RawMaxX
+        {
+            get { lock (sync) { return rawMaxX; } }
+        }
+
+        public int RawMinY
+        {
+            get { lock (sync) { return rawMinY; } }
+        }
+
+        public int RawMaxY
+        {
+            get { lock (sync) { return rawMaxY; } }
+        }
+
         public int PressureMin
         {
             get { lock (sync) { return pressureMin; } }
@@ -134,6 +199,16 @@ namespace BoogieBoardSync
         public int LastRawPressure
         {
             get { lock (sync) { return lastRawPressure; } }
+        }
+
+        public int LastRawX
+        {
+            get { lock (sync) { return lastRawX; } }
+        }
+
+        public int LastRawY
+        {
+            get { lock (sync) { return lastRawY; } }
         }
 
         public int LastMappedPressure
@@ -171,10 +246,12 @@ namespace BoogieBoardSync
             }
         }
 
-        public void ReportInput(int rawPressure, int mappedPressure, bool touch, bool hover)
+        public void ReportInput(int rawX, int rawY, int rawPressure, int mappedPressure, bool touch, bool hover)
         {
             lock (sync)
             {
+                lastRawX = rawX;
+                lastRawY = rawY;
                 lastRawPressure = rawPressure;
                 lastMappedPressure = mappedPressure;
                 lastTouch = touch;
@@ -280,6 +357,70 @@ namespace BoogieBoardSync
             }
         }
 
+        public void SetMapRegion(int x, int y, int width, int height)
+        {
+            lock (sync)
+            {
+                mapX = Math.Max(0, x);
+                mapY = Math.Max(0, y);
+                mapWidth = Math.Max(0, width);
+                mapHeight = Math.Max(0, height);
+                RebuildLocked();
+            }
+        }
+
+        public void SetMapFit(string fit)
+        {
+            lock (sync)
+            {
+                mapFit = NormalizeMapFit(fit);
+                RebuildLocked();
+            }
+        }
+
+        public void SetRawRange(int minX, int maxX, int minY, int maxY)
+        {
+            lock (sync)
+            {
+                rawMinX = Math.Max(0, minX);
+                rawMaxX = Math.Max(rawMinX + 1, maxX);
+                rawMinY = Math.Max(0, minY);
+                rawMaxY = Math.Max(rawMinY + 1, maxY);
+                RebuildLocked();
+            }
+        }
+
+        public static string NormalizeMapFit(string value)
+        {
+            if (string.IsNullOrEmpty(value))
+            {
+                return "stretch";
+            }
+            value = value.ToLowerInvariant();
+            if (value == "uniform" || value == "equal" || value == "fit" || value == "aspect")
+            {
+                return "uniform";
+            }
+            if (value == "fill" || value == "cover" || value == "crop")
+            {
+                return "fill";
+            }
+            return "stretch";
+        }
+
+        public static string DescribeFit(string fit)
+        {
+            if (fit == "uniform")
+            {
+                return "等比适应";
+            }
+            if (fit == "fill")
+            {
+                return "等比填充";
+            }
+            return "拉伸";
+        }
+
         public void SetPressure(int min, int max, double gamma, double deadzone, double smoothing)
         {
             lock (sync)
@@ -326,16 +467,38 @@ namespace BoogieBoardSync
             int height;
             GetScreenBounds(screenIndex, out left, out top, out width, out height);
 
-            Options mapping = new Options();
-            mapping.RawMinX = options.RawMinX;
-            mapping.RawMaxX = options.RawMaxX;
-            mapping.RawMinY = options.RawMinY;
-            mapping.RawMaxY = options.RawMaxY;
-            mapping.Rotate = rotate;
-            mapping.FlipX = flipX;
-            mapping.FlipY = flipY;
+            int regionLeft = left;
+            int regionTop = top;
+            int regionWidth = width;
+            int regionHeight = height;
+            if (mapWidth > 0 && mapHeight > 0)
+            {
+                int x = Math.Min(mapX, Math.Max(0, width - 1));
+                int y = Math.Min(mapY, Math.Max(0, height - 1));
+                int w = Math.Min(mapWidth, width - x);
+                int h = Math.Min(mapHeight, height - y);
+                if (w > 0 && h > 0)
+                {
+                    regionLeft = left + x;
+                    regionTop = top + y;
+                    regionWidth = w;
+                    regionHeight = h;
+                }
+            }
 
-            TabletMapper mapper = new TabletMapper(mapping, left, top, width, height);
+            TabletMapper mapper = new TabletMapper(
+                rawMinX,
+                rawMaxX,
+                rawMinY,
+                rawMaxY,
+                rotate,
+                flipX,
+                flipY,
+                regionLeft,
+                regionTop,
+                regionWidth,
+                regionHeight,
+                mapFit);
             PressureMapper pressure = new PressureMapper(
                 pressureMin,
                 pressureMax,

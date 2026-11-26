@@ -27,6 +27,7 @@ namespace BoogieBoardSync
         private readonly ToolStripMenuItem autoStartItem;
         private readonly List<ToolStripMenuItem> rotateItems = new List<ToolStripMenuItem>();
         private readonly List<ToolStripMenuItem> screenItems = new List<ToolStripMenuItem>();
+        private readonly List<ToolStripMenuItem> fitItems = new List<ToolStripMenuItem>();
         private readonly List<ToolStripMenuItem> curveItems = new List<ToolStripMenuItem>();
         private readonly List<ToolStripMenuItem> connectionItems = new List<ToolStripMenuItem>();
         private SettingsForm settingsForm;
@@ -126,12 +127,12 @@ namespace BoogieBoardSync
             screenItems.Add(allScreens);
             screenMenu.DropDownItems.Add(allScreens);
             Screen[] screens = Screen.AllScreens;
-            for (int i = 0; i < screens.Length; i++)
+            int[] screenOrder = ScreenUtil.IndicesSortedByDisplayNumber();
+            for (int k = 0; k < screenOrder.Length; k++)
             {
+                int i = screenOrder[k];
                 int index = i;
-                Rectangle bounds = screens[i].Bounds;
-                ToolStripMenuItem item = new ToolStripMenuItem(string.Format(
-                    "显示器 {0}  {1}x{2}", i + 1, bounds.Width, bounds.Height));
+                ToolStripMenuItem item = new ToolStripMenuItem(ScreenUtil.Describe(screens[i]));
                 item.Tag = index;
                 item.Click += delegate(object sender, EventArgs e) { SetScreen(index); };
                 screenItems.Add(item);
@@ -139,11 +140,25 @@ namespace BoogieBoardSync
             }
             menu.Items.Add(screenMenu);
 
+            ToolStripMenuItem fitMenu = new ToolStripMenuItem("映射比例");
+            AddFitItem(fitMenu, "拉伸铺满", "stretch");
+            AddFitItem(fitMenu, "等比适应（保持平板比例）", "uniform");
+            AddFitItem(fitMenu, "等比填充（裁剪到屏幕比例）", "fill");
+            menu.Items.Add(fitMenu);
+
+            ToolStripMenuItem mappingItem = new ToolStripMenuItem("映射区域与校准…");
+            mappingItem.Click += delegate(object sender, EventArgs e) { ShowSettings(1); };
+            menu.Items.Add(mappingItem);
+
             ToolStripMenuItem pressureMenu = new ToolStripMenuItem("力度曲线");
             AddCurveItem(pressureMenu, "柔和", 0.70);
             AddCurveItem(pressureMenu, "线性", 1.00);
             AddCurveItem(pressureMenu, "硬朗", 1.40);
             menu.Items.Add(pressureMenu);
+
+            ToolStripMenuItem calibrateItem = new ToolStripMenuItem("力度校准…");
+            calibrateItem.Click += delegate(object sender, EventArgs e) { ShowSettings(2); };
+            menu.Items.Add(calibrateItem);
 
             menu.Items.Add(new ToolStripSeparator());
 
@@ -213,7 +228,7 @@ namespace BoogieBoardSync
                     startupShowTimer.Stop();
                     startupShowTimer.Dispose();
                     startupShowTimer = null;
-                    ShowSettings();
+                    ShowSettings(options.SettingsTab);
                 };
                 startupShowTimer.Start();
             }
@@ -283,9 +298,18 @@ namespace BoogieBoardSync
 
         internal void ShowSettings()
         {
+            ShowSettings(-1);
+        }
+
+        internal void ShowSettings(int tabIndex)
+        {
             if (settingsForm == null || settingsForm.IsDisposed)
             {
                 settingsForm = new SettingsForm(this);
+            }
+            if (tabIndex >= 0)
+            {
+                settingsForm.SelectTab(tabIndex);
             }
             if (!settingsForm.Visible)
             {
@@ -301,6 +325,8 @@ namespace BoogieBoardSync
         }
 
         internal void ApplySettings(bool mouse, bool paused, string connection, int rotate, int screenIndex,
+            int mapX, int mapY, int mapWidth, int mapHeight, string mapFit,
+            int rawMinX, int rawMaxX, int rawMinY, int rawMaxY,
             int pressureMin, int pressureMax, double pressureGamma,
             double pressureDeadzone, double pressureSmoothing)
         {
@@ -310,6 +336,9 @@ namespace BoogieBoardSync
             runtime.SetConnectionMode(connection);
             runtime.SetRotate(rotate);
             runtime.SetScreenIndex(screenIndex);
+            runtime.SetMapRegion(mapX, mapY, mapWidth, mapHeight);
+            runtime.SetMapFit(mapFit);
+            runtime.SetRawRange(rawMinX, rawMaxX, rawMinY, rawMaxY);
             runtime.SetPressure(pressureMin, pressureMax, pressureGamma, pressureDeadzone, pressureSmoothing);
             SaveAndRefresh();
             if (previousConnection != runtime.ConnectionMode)
@@ -363,6 +392,15 @@ namespace BoogieBoardSync
             parent.DropDownItems.Add(item);
         }
 
+        private void AddFitItem(ToolStripMenuItem parent, string label, string value)
+        {
+            ToolStripMenuItem item = new ToolStripMenuItem(label);
+            item.Tag = value;
+            item.Click += delegate(object sender, EventArgs e) { SetMapFit(value); };
+            fitItems.Add(item);
+            parent.DropDownItems.Add(item);
+        }
+
         private void TogglePause()
         {
             runtime.SetPaused(!runtime.Paused);
@@ -395,6 +433,12 @@ namespace BoogieBoardSync
         private void SetScreen(int index)
         {
             runtime.SetScreenIndex(index);
+            SaveAndRefresh();
+        }
+
+        private void SetMapFit(string value)
+        {
+            runtime.SetMapFit(value);
             SaveAndRefresh();
         }
 
@@ -449,6 +493,10 @@ namespace BoogieBoardSync
             for (int i = 0; i < screenItems.Count; i++)
             {
                 screenItems[i].Checked = ((int)screenItems[i].Tag) == runtime.ScreenIndex;
+            }
+            for (int i = 0; i < fitItems.Count; i++)
+            {
+                fitItems[i].Checked = (string)fitItems[i].Tag == runtime.MapFit;
             }
             for (int i = 0; i < connectionItems.Count; i++)
             {
@@ -565,7 +613,7 @@ namespace BoogieBoardSync
             text.AppendLine("输入模式: " + (runtime.MouseMode ? "鼠标" : "Windows Ink 数位板"));
             text.AppendLine("暂停: " + (runtime.Paused ? "是" : "否"));
             text.AppendLine("旋转: " + runtime.Rotate + "°");
-            text.AppendLine("屏幕: " + (runtime.ScreenIndex < 0 ? "全部屏幕" : "显示器 " + (runtime.ScreenIndex + 1)));
+            text.AppendLine("屏幕: " + ScreenUtil.LabelForIndex(runtime.ScreenIndex));
             text.AppendLine(string.Format(
                 "力度: 原始 {0}-{1}, gamma {2:0.00}, 死区 {3:0.00}, 平滑 {4:0.00}",
                 runtime.PressureMin,
@@ -573,6 +621,17 @@ namespace BoogieBoardSync
                 runtime.PressureGamma,
                 runtime.PressureDeadzone,
                 runtime.PressureSmoothing));
+            text.AppendLine(string.Format(
+                "映射: 平板 X {0}-{1} Y {2}-{3}; 区域 {4},{5} {6}x{7}; 比例 {8}（宽/高为 0 表示铺满屏幕）",
+                runtime.RawMinX,
+                runtime.RawMaxX,
+                runtime.RawMinY,
+                runtime.RawMaxY,
+                runtime.MapX,
+                runtime.MapY,
+                runtime.MapWidth,
+                runtime.MapHeight,
+                DriverRuntime.DescribeFit(runtime.MapFit)));
             text.AppendLine(string.Format(
                 "最近输入: {0}; 原始力度 {1} -> 输出 {2}; touch={3} hover={4}",
                 FormatInputAge(runtime.LastInputAgeMs),
@@ -889,7 +948,7 @@ namespace BoogieBoardSync
             {
                 if (message.Msg == NativeMethods.WM_SHOW_SETTINGS)
                 {
-                    owner.ShowSettings();
+                    owner.ShowSettings(message.WParam.ToInt32() - 1);
                     return;
                 }
                 if (message.Msg == NativeMethods.WM_HOTKEY)

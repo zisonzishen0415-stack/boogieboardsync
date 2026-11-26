@@ -43,11 +43,17 @@ namespace BoogieBoardSync
         public bool Help;
         public bool Tray;
         public bool ShowSettings;
+        public int SettingsTab;
         public bool ShowVersion;
         public bool NoTabletMode;
         public int Rotate;
         public bool FlipX;
         public bool FlipY;
+        public int MapX;
+        public int MapY;
+        public int MapWidth;
+        public int MapHeight;
+        public string MapFit = "stretch";
         public int RawMinX = 0;
         public int RawMaxX = 20280;
         public int RawMinY = 0;
@@ -85,6 +91,11 @@ namespace BoogieBoardSync
                 }
                 else if (arg == "--show-settings")
                 {
+                    options.ShowSettings = true;
+                }
+                else if (arg.StartsWith("--settings-tab=", StringComparison.OrdinalIgnoreCase))
+                {
+                    options.SettingsTab = Math.Max(0, Math.Min(3, ParseInt(Value(arg), 0)));
                     options.ShowSettings = true;
                 }
                 else if (arg == "--version" || arg == "-v")
@@ -329,8 +340,39 @@ namespace BoogieBoardSync
                         {
                             throw new ArgumentException("--screen must be all or a monitor number starting at 1");
                         }
-                        options.ScreenIndex = number - 1;
+                        int index = ScreenUtil.IndexOfDisplayNumber(number);
+                        if (index < 0)
+                        {
+                            throw new ArgumentException("--screen: 找不到显示器 " + number);
+                        }
+                        options.ScreenIndex = index;
                     }
+                }
+                else if (arg.StartsWith("--map-x=", StringComparison.OrdinalIgnoreCase))
+                {
+                    options.MapX = Math.Max(0, ParseInt(Value(arg), options.MapX));
+                }
+                else if (arg.StartsWith("--map-y=", StringComparison.OrdinalIgnoreCase))
+                {
+                    options.MapY = Math.Max(0, ParseInt(Value(arg), options.MapY));
+                }
+                else if (arg.StartsWith("--map-width=", StringComparison.OrdinalIgnoreCase))
+                {
+                    options.MapWidth = Math.Max(0, ParseInt(Value(arg), options.MapWidth));
+                }
+                else if (arg.StartsWith("--map-height=", StringComparison.OrdinalIgnoreCase))
+                {
+                    options.MapHeight = Math.Max(0, ParseInt(Value(arg), options.MapHeight));
+                }
+                else if (arg.StartsWith("--map-fit=", StringComparison.OrdinalIgnoreCase))
+                {
+                    string fit = Value(arg).ToLowerInvariant();
+                    if (fit != "stretch" && fit != "uniform" && fit != "fill"
+                        && fit != "cover" && fit != "crop")
+                    {
+                        throw new ArgumentException("--map-fit must be stretch, uniform or fill");
+                    }
+                    options.MapFit = DriverRuntime.NormalizeMapFit(fit);
                 }
                 else
                 {
@@ -493,21 +535,16 @@ namespace BoogieBoardSync
                 return RunInjectionTest(options);
             }
 
-            if (options.Connection == "bluetooth")
-            {
-                if (options.Probe)
-                {
-                    return RunBluetoothProbe(options);
-                }
-                return RunDriver(options);
-            }
-
-            HidDevice[] devices = HidDevice.FindAll(HidDevice.BoogieVendorId, HidDevice.BoogieProductId);
+            bool viaBluetoothHid;
+            HidDevice[] devices = FindVendorDevices(options.Connection, out viaBluetoothHid);
             if (devices.Length == 0)
             {
-                if (options.Connection == "auto")
+                if (options.Connection != "usb")
                 {
-                    Console.WriteLine("USB device not found; trying Bluetooth (auto).");
+                    if (options.Connection == "auto")
+                    {
+                        Console.WriteLine("USB device not found; trying Bluetooth (auto).");
+                    }
                     if (options.Probe)
                     {
                         return RunBluetoothProbe(options);
@@ -517,6 +554,12 @@ namespace BoogieBoardSync
 
                 Console.Error.WriteLine("Boogie Board Sync not found (VID_2914 PID_0100).");
                 return 2;
+            }
+
+            if (viaBluetoothHid)
+            {
+                options.Mode = BluetoothStreamMode(options);
+                Console.WriteLine("Using Bluetooth HID collection (Windows paired the board over Bluetooth).");
             }
 
             Console.WriteLine("Found {0} HID collection(s):", devices.Length);
@@ -564,7 +607,7 @@ namespace BoogieBoardSync
             }
         }
 
-        private static bool SetSyncMode(HidDevice device, int mode, Options options)
+        private static bool SetSyncMode(HidDevice device, int mode, Options options, bool releaseStorage = true)
         {
             bool verbose = true;
 
@@ -574,13 +617,13 @@ namespace BoogieBoardSync
                 return SendModeBlind(device, mode, options);
             }
 
-            if (!string.IsNullOrEmpty(options.EjectDrive))
+            if (releaseStorage && !string.IsNullOrEmpty(options.EjectDrive))
             {
                 Console.WriteLine("Releasing drive {0}...", options.EjectDrive);
                 StorageUtil.Release(options.EjectDrive, verbose);
                 Thread.Sleep(500);
             }
-            else if (options.AutoEject && !options.NoEject)
+            else if (releaseStorage && options.AutoEject && !options.NoEject)
             {
                 Console.WriteLine("Releasing Boogie Board storage so the firmware can leave file mode...");
                 StorageUtil.ReleaseBoogieStorage(verbose);
@@ -613,7 +656,7 @@ namespace BoogieBoardSync
                 }
             }
 
-            if (options.AutoEject && !options.NoEject)
+            if (releaseStorage && options.AutoEject && !options.NoEject)
             {
                 Console.WriteLine("Releasing storage again and retrying...");
                 StorageUtil.ReleaseBoogieStorage(verbose);
@@ -701,12 +744,18 @@ namespace BoogieBoardSync
 
         private static int RunVerify(Options options)
         {
-            HidDevice[] devices = HidDevice.FindAll(HidDevice.BoogieVendorId, HidDevice.BoogieProductId);
+            bool viaBluetoothHid;
+            HidDevice[] devices = FindVendorDevices(options.Connection, out viaBluetoothHid);
             HidDevice device = SelectCollection(devices, "vendor");
             if (device == null)
             {
                 Console.Error.WriteLine("Vendor collection not found.");
                 return 2;
+            }
+            if (viaBluetoothHid)
+            {
+                options.Mode = BluetoothStreamMode(options);
+                Console.WriteLine("Using Bluetooth HID collection (mode {0}).", options.Mode);
             }
             if (!device.Open(true))
             {
@@ -716,7 +765,7 @@ namespace BoogieBoardSync
 
             try
             {
-                bool confirmed = SetSyncMode(device, options.Mode, options);
+                bool confirmed = SetSyncMode(device, options.Mode, options, !viaBluetoothHid);
                 if (options.Blind)
                 {
                     Console.WriteLine("Blind mode commands were sent for mode {0}; testing input reports.", options.Mode);
@@ -1174,7 +1223,13 @@ namespace BoogieBoardSync
         private static int RunDoctor(Options options)
         {
             Console.WriteLine("== BoogieBoardSync doctor ==");
-            HidDevice[] devices = HidDevice.FindAll(HidDevice.BoogieVendorId, HidDevice.BoogieProductId);
+            bool viaBluetoothHid;
+            HidDevice[] devices = FindVendorDevices(options.Connection, out viaBluetoothHid);
+            if (viaBluetoothHid)
+            {
+                options.Mode = BluetoothStreamMode(options);
+                Console.WriteLine("Using Bluetooth HID collection (mode {0}).", options.Mode);
+            }
             Console.WriteLine("HID collections: {0}", devices.Length);
             foreach (HidDevice candidate in devices)
             {
@@ -1494,7 +1549,15 @@ namespace BoogieBoardSync
                     string connection = runtime.ConnectionMode;
                     if (connection == "bluetooth")
                     {
-                        RunBluetoothSession(options, runtime, injector);
+                        HidDevice[] bluetoothHid = FindBluetoothHidCollections();
+                        if (bluetoothHid.Length > 0)
+                        {
+                            RunBluetoothHidSession(options, runtime, injector);
+                        }
+                        else
+                        {
+                            RunBluetoothSession(options, runtime, injector);
+                        }
                     }
                     else if (connection == "usb")
                     {
@@ -1502,10 +1565,18 @@ namespace BoogieBoardSync
                     }
                     else
                     {
-                        HidDevice[] devices = HidDevice.FindAll(HidDevice.BoogieVendorId, HidDevice.BoogieProductId);
+                        bool viaBluetoothHid;
+                        HidDevice[] devices = FindVendorDevices("auto", out viaBluetoothHid);
                         if (devices.Length > 0)
                         {
-                            RunUsbSession(options, runtime, injector);
+                            if (viaBluetoothHid)
+                            {
+                                RunBluetoothHidSession(options, runtime, injector);
+                            }
+                            else
+                            {
+                                RunUsbSession(options, runtime, injector);
+                            }
                         }
                         else
                         {
@@ -1516,7 +1587,7 @@ namespace BoogieBoardSync
                     if (!stopRequested && !reconnectRequested)
                     {
                         Console.WriteLine("Device disconnected or read failed; reconnecting...");
-                        Wait(1500);
+                        Wait(800);
                     }
                 }
             }
@@ -1526,17 +1597,34 @@ namespace BoogieBoardSync
 
         private static void RunUsbSession(Options options, DriverRuntime runtime, PenInjector injector)
         {
-            HidDevice[] devices = HidDevice.FindAll(HidDevice.BoogieVendorId, HidDevice.BoogieProductId);
+            RunHidSession(options, runtime, injector, false);
+        }
+
+        private static void RunBluetoothHidSession(Options options, DriverRuntime runtime, PenInjector injector)
+        {
+            RunHidSession(options, runtime, injector, true);
+        }
+
+        private static void RunHidSession(Options options, DriverRuntime runtime, PenInjector injector, bool viaBluetoothHid)
+        {
+            HidDevice[] devices = viaBluetoothHid
+                ? FindBluetoothHidCollections()
+                : HidDevice.FindAll(HidDevice.BoogieVendorId, HidDevice.BoogieProductId);
             HidDevice target = SelectCollection(devices, options.Collection);
             if (target == null)
             {
                 runtime.SetActiveLink("");
-                Console.WriteLine("USB device not found; waiting...");
+                Console.WriteLine(viaBluetoothHid
+                    ? "Bluetooth HID collection not found; waiting..."
+                    : "USB device not found; waiting...");
                 Wait(2000);
                 return;
             }
 
-            Console.WriteLine("Using USB {0} collection: {1}", target.CollectionName, target.Path);
+            Console.WriteLine("Using {0} {1} collection: {2}",
+                viaBluetoothHid ? "Bluetooth HID" : "USB",
+                target.CollectionName,
+                target.Path);
             if (!target.Open(true))
             {
                 runtime.SetActiveLink("");
@@ -1547,16 +1635,17 @@ namespace BoogieBoardSync
             }
 
             currentDevice = target;
-            runtime.SetActiveLink("USB");
-            AppLog.Write("usb connected: " + target.Path);
+            runtime.SetActiveLink(viaBluetoothHid ? "蓝牙 HID" : "USB");
+            AppLog.Write((viaBluetoothHid ? "bluetooth hid connected: " : "usb connected: ") + target.Path);
             try
             {
                 if (!options.NoTabletMode)
                 {
-                    bool modeOk = SetSyncMode(target, options.Mode, options);
+                    int mode = viaBluetoothHid ? BluetoothStreamMode(options) : options.Mode;
+                    bool modeOk = SetSyncMode(target, mode, options, !viaBluetoothHid);
                     if (!modeOk)
                     {
-                        Console.WriteLine("WARN: mode {0} was not confirmed by feature 5; continuing to read input reports.", options.Mode);
+                        Console.WriteLine("WARN: mode {0} was not confirmed by feature 5; continuing to read input reports.", mode);
                         Console.WriteLine("      Use --verify --duration=20 to test whether the board is actually sending pen data.");
                     }
                 }
@@ -1574,7 +1663,7 @@ namespace BoogieBoardSync
 
         private static int BluetoothStreamMode(Options options)
         {
-            if (options.ModeExplicit && (options.Mode == 1 || options.Mode == 4 || options.Mode == 5))
+            if (options.ModeExplicit)
             {
                 return options.Mode;
             }
@@ -1600,7 +1689,7 @@ namespace BoogieBoardSync
                 AppLog.Write("bluetooth board not found");
                 Console.WriteLine("  Pair it once in Windows Settings > Bluetooth, then make sure it is powered on.");
                 Console.WriteLine("  Run --bt-scan to list nearby Bluetooth devices.");
-                Wait(3000);
+                Wait(1500);
                 return;
             }
 
@@ -1615,7 +1704,7 @@ namespace BoogieBoardSync
                     runtime.SetActiveLink("");
                     Console.WriteLine("Bluetooth connect failed: {0}", error);
                     AppLog.Write("bluetooth connect failed: " + error);
-                    Wait(3000);
+                    Wait(1500);
                     return;
                 }
 
@@ -1685,6 +1774,8 @@ namespace BoogieBoardSync
             byte[] buffer = new byte[64];
             int frames = 0;
             long lastReportTicks = DateTime.UtcNow.Ticks;
+            int hadReport = 0;
+            int idleTicks = 0;
             ReportProcessor processor = new ReportProcessor(runtime, injector, options);
             Timer modeTimer = new Timer(delegate(object state)
             {
@@ -1693,18 +1784,29 @@ namespace BoogieBoardSync
                     return;
                 }
                 long last = Interlocked.Read(ref lastReportTicks);
-                if (DateTime.UtcNow.Ticks - last < TimeSpan.TicksPerSecond * 15)
+                if (DateTime.UtcNow.Ticks - last < TimeSpan.TicksPerSecond * 10)
                 {
+                    idleTicks = 0;
                     return;
                 }
                 Interlocked.Exchange(ref lastReportTicks, DateTime.UtcNow.Ticks);
-                AppLog.Write("bluetooth idle; reasserting capture mode " + streamMode);
-                if (!transport.SendFeatureReport(0x05, new byte[] { (byte)streamMode }))
+                idleTicks++;
+                bool reported = Interlocked.CompareExchange(ref hadReport, 0, 0) != 0;
+                if (idleTicks == 1)
                 {
-                    AppLog.Write("bluetooth idle reassert failed: " + transport.LastErrorText);
+                    AppLog.Write("bluetooth idle; reasserting capture mode " + streamMode);
+                    if (!transport.SendFeatureReport(0x05, new byte[] { (byte)streamMode }))
+                    {
+                        AppLog.Write("bluetooth idle reassert failed: " + transport.LastErrorText);
+                        transport.CancelRead();
+                    }
+                }
+                else if (reported && idleTicks >= 3)
+                {
+                    AppLog.Write("bluetooth stalled after input; forcing reconnect");
                     transport.CancelRead();
                 }
-            }, null, 15000, 15000);
+            }, null, 10000, 10000);
 
             try
             {
@@ -1720,6 +1822,7 @@ namespace BoogieBoardSync
                         if (!stopRequested && !reconnectRequested)
                         {
                             Console.WriteLine("Bluetooth read failed: {0}", transport.LastErrorText);
+                            AppLog.Write("bluetooth read failed: " + transport.LastErrorText);
                         }
                         break;
                     }
@@ -1728,6 +1831,7 @@ namespace BoogieBoardSync
                         continue;
                     }
 
+                    Interlocked.Exchange(ref hadReport, 1);
                     Interlocked.Exchange(ref lastReportTicks, DateTime.UtcNow.Ticks);
                     frames++;
                     processor.Process(buffer, count);
@@ -1765,6 +1869,10 @@ namespace BoogieBoardSync
             private bool lastPaused;
             private bool hasMouseMode;
             private bool lastMouseMode;
+            private bool lastTouchState;
+            private int lastRawPressureState;
+            private string previousReport = "";
+            private string previousReport2 = "";
             private long lastDebugMs = -1000;
 
             public int ParsedReports;
@@ -1803,6 +1911,27 @@ namespace BoogieBoardSync
                     hasMouseMode = true;
                 }
 
+                string reportText = string.Format(
+                    "x={0} y={1} p={2} touch={3} hover={4} side={5}",
+                    x, y, pressure, touch, hover, side);
+                if (!snapshot.Paused)
+                {
+                    if (lastTouchState && !touch)
+                    {
+                        AppLog.Write("pen-up: [" + previousReport2 + "] -> [" + previousReport + "] -> [" + reportText + "]");
+                    }
+                    if (touch && lastRawPressureState > 0
+                        && pressure > runtime.PressureMax
+                        && pressure - lastRawPressureState > 200)
+                    {
+                        AppLog.Write("pressure jump: [" + previousReport + "] -> [" + reportText + "]");
+                    }
+                }
+                previousReport2 = previousReport;
+                previousReport = reportText;
+                lastTouchState = touch;
+                lastRawPressureState = pressure;
+
                 if (snapshot.Paused)
                 {
                     if (!lastPaused)
@@ -1811,14 +1940,14 @@ namespace BoogieBoardSync
                         lastPaused = true;
                     }
                     snapshot.Pressure.ResetSmoothing();
-                    runtime.ReportInput(pressure, 0, touch, hover);
+                    runtime.ReportInput(x, y, pressure, 0, touch, hover);
                     lastInRange = false;
                     return;
                 }
                 lastPaused = false;
 
                 int scaledPressure = touch ? snapshot.Pressure.Map(pressure) : 0;
-                runtime.ReportInput(pressure, scaledPressure, touch, hover);
+                runtime.ReportInput(x, y, pressure, scaledPressure, touch, hover);
                 if (options.Debug && clock.ElapsedMilliseconds - lastDebugMs > 100)
                 {
                     lastDebugMs = clock.ElapsedMilliseconds;
@@ -2218,6 +2347,42 @@ namespace BoogieBoardSync
             }
         }
 
+        private static HidDevice[] FindBluetoothHidCollections()
+        {
+            List<HidDevice> result = new List<HidDevice>();
+            foreach (HidDevice device in HidDevice.FindAll(HidDevice.BoogieBluetoothVendorId, HidDevice.BoogieProductId))
+            {
+                if (device.CollectionName == "vendor" && device.InputReportByteLength >= 8)
+                {
+                    result.Add(device);
+                }
+            }
+            return result.ToArray();
+        }
+
+        private static HidDevice[] FindVendorDevices(string connection, out bool viaBluetoothHid)
+        {
+            viaBluetoothHid = false;
+            if (connection != "bluetooth")
+            {
+                HidDevice[] usb = HidDevice.FindAll(HidDevice.BoogieVendorId, HidDevice.BoogieProductId);
+                if (usb.Length > 0)
+                {
+                    return usb;
+                }
+            }
+            if (connection != "usb")
+            {
+                HidDevice[] bluetooth = FindBluetoothHidCollections();
+                if (bluetooth.Length > 0)
+                {
+                    viaBluetoothHid = true;
+                    return bluetooth;
+                }
+            }
+            return new HidDevice[0];
+        }
+
         private static HidDevice SelectCollection(HidDevice[] devices, string requested)
         {
             HidDevice vendor = null;
@@ -2350,6 +2515,11 @@ namespace BoogieBoardSync
             Console.WriteLine("  --raw-max=WxH           Raw tablet maximum, default 20280x13942");
             Console.WriteLine("  --raw-min=XxY           Raw tablet minimum, default 0x0");
             Console.WriteLine("  --screen=all|N          Map to all screens or monitor N (1-based)");
+            Console.WriteLine("  --map-x=N               Target region X inside the screen, default 0");
+            Console.WriteLine("  --map-y=N               Target region Y inside the screen, default 0");
+            Console.WriteLine("  --map-width=N           Target region width, 0 fills the whole screen");
+            Console.WriteLine("  --map-height=N          Target region height, 0 fills the whole screen");
+            Console.WriteLine("  --map-fit=stretch|uniform|fill  Stretch, keep aspect with bars, or fill by cropping");
             Console.WriteLine("  --pressure-min=N        Raw pressure floor, default 0");
             Console.WriteLine("  --pressure-max=N        Raw pressure ceiling, default 1023");
             Console.WriteLine("  --pressure-curve=C      soft, linear, firm, or gamma 0.1..4.0");
@@ -2364,6 +2534,7 @@ namespace BoogieBoardSync
             Console.WriteLine("  --bt-name=NAME          Bluetooth name filter, default Boogie/Improv/Sync auto-detect");
             Console.WriteLine("  --bt-channel=N          RFCOMM channel override; default auto-detect (Sync streaming is channel 3)");
             Console.WriteLine("  --show-settings         Open the tray settings window at startup");
+            Console.WriteLine("  --settings-tab=N        Open settings on tab N: 0 input, 1 mapping, 2 pressure, 3 diagnostics");
             Console.WriteLine("  --tray                  Start the tray application");
             Console.WriteLine("  --version               Show the program version");
             Console.WriteLine("  --help                  Show this help");

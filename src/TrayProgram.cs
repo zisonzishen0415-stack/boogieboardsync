@@ -6,21 +6,22 @@ namespace BoogieBoardSync
 {
     internal static class TrayProgram
     {
-        private static bool ShowExistingSettings()
+        private static bool ShowExistingSettings(int tabIndex)
         {
+            IntPtr wparam = new IntPtr(tabIndex + 1);
             for (int i = 0; i < 20; i++)
             {
                 IntPtr window = NativeMethods.FindWindow(null, "BoogieBoardSyncHotkeys");
                 if (window != IntPtr.Zero)
                 {
-                    NativeMethods.PostMessage(window, NativeMethods.WM_SHOW_SETTINGS, IntPtr.Zero, IntPtr.Zero);
+                    NativeMethods.PostMessage(window, NativeMethods.WM_SHOW_SETTINGS, wparam, IntPtr.Zero);
                     return true;
                 }
                 Thread.Sleep(100);
             }
 
             IntPtr broadcast = new IntPtr(0xFFFF);
-            NativeMethods.PostMessage(broadcast, NativeMethods.WM_SHOW_SETTINGS, IntPtr.Zero, IntPtr.Zero);
+            NativeMethods.PostMessage(broadcast, NativeMethods.WM_SHOW_SETTINGS, wparam, IntPtr.Zero);
             Thread.Sleep(250);
             return NativeMethods.FindWindow(null, "BoogieBoardSyncHotkeys") != IntPtr.Zero;
         }
@@ -28,12 +29,23 @@ namespace BoogieBoardSync
         [STAThread]
         public static int Main(string[] args)
         {
+            Options options;
+            try
+            {
+                options = Options.Parse(args);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(ex.Message, "BoogieBoardSync", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                return 1;
+            }
+
             bool createdNew;
             using (Mutex mutex = new Mutex(true, "Local\\BoogieBoardSyncTray", out createdNew))
             {
                 if (!createdNew)
                 {
-                    if (!ShowExistingSettings())
+                    if (!ShowExistingSettings(options.SettingsTab))
                     {
                         MessageBox.Show(
                             AppInfo.DisplayName + " 托盘程序已经在运行，但设置窗口暂时无法唤醒。" + Environment.NewLine +
@@ -43,17 +55,6 @@ namespace BoogieBoardSync
                             MessageBoxIcon.Information);
                     }
                     return 0;
-                }
-
-                Options options;
-                try
-                {
-                    options = Options.Parse(args);
-                }
-                catch (Exception ex)
-                {
-                    MessageBox.Show(ex.Message, "BoogieBoardSync", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                    return 1;
                 }
 
                 Program.EnableDpiAwareness();

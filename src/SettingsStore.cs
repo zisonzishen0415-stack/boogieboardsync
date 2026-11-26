@@ -80,6 +80,54 @@ namespace BoogieBoardSync
             }
             runtime.SetFlip(flipX, flipY);
 
+            int mapX = runtime.MapX;
+            int mapY = runtime.MapY;
+            int mapWidth = runtime.MapWidth;
+            int mapHeight = runtime.MapHeight;
+            if (values.TryGetValue("mapx", out value))
+            {
+                mapX = ParseInt(value, mapX);
+            }
+            if (values.TryGetValue("mapy", out value))
+            {
+                mapY = ParseInt(value, mapY);
+            }
+            if (values.TryGetValue("mapwidth", out value))
+            {
+                mapWidth = ParseInt(value, mapWidth);
+            }
+            if (values.TryGetValue("mapheight", out value))
+            {
+                mapHeight = ParseInt(value, mapHeight);
+            }
+            runtime.SetMapRegion(mapX, mapY, mapWidth, mapHeight);
+            if (values.TryGetValue("mapfit", out value))
+            {
+                runtime.SetMapFit(value);
+            }
+
+            int rawMinX = runtime.RawMinX;
+            int rawMaxX = runtime.RawMaxX;
+            int rawMinY = runtime.RawMinY;
+            int rawMaxY = runtime.RawMaxY;
+            if (values.TryGetValue("rawminx", out value))
+            {
+                rawMinX = ParseInt(value, rawMinX);
+            }
+            if (values.TryGetValue("rawmaxx", out value))
+            {
+                rawMaxX = ParseInt(value, rawMaxX);
+            }
+            if (values.TryGetValue("rawminy", out value))
+            {
+                rawMinY = ParseInt(value, rawMinY);
+            }
+            if (values.TryGetValue("rawmaxy", out value))
+            {
+                rawMaxY = ParseInt(value, rawMaxY);
+            }
+            runtime.SetRawRange(rawMinX, rawMaxX, rawMinY, rawMaxY);
+
             int min = runtime.PressureMin;
             int max = runtime.PressureMax;
             double gamma = runtime.PressureGamma;
@@ -119,6 +167,15 @@ namespace BoogieBoardSync
             text.AppendLine("screen=" + runtime.ScreenIndex.ToString(CultureInfo.InvariantCulture));
             text.AppendLine("flipx=" + runtime.FlipX.ToString().ToLowerInvariant());
             text.AppendLine("flipy=" + runtime.FlipY.ToString().ToLowerInvariant());
+            text.AppendLine("mapx=" + runtime.MapX.ToString(CultureInfo.InvariantCulture));
+            text.AppendLine("mapy=" + runtime.MapY.ToString(CultureInfo.InvariantCulture));
+            text.AppendLine("mapwidth=" + runtime.MapWidth.ToString(CultureInfo.InvariantCulture));
+            text.AppendLine("mapheight=" + runtime.MapHeight.ToString(CultureInfo.InvariantCulture));
+            text.AppendLine("mapfit=" + runtime.MapFit);
+            text.AppendLine("rawminx=" + runtime.RawMinX.ToString(CultureInfo.InvariantCulture));
+            text.AppendLine("rawmaxx=" + runtime.RawMaxX.ToString(CultureInfo.InvariantCulture));
+            text.AppendLine("rawminy=" + runtime.RawMinY.ToString(CultureInfo.InvariantCulture));
+            text.AppendLine("rawmaxy=" + runtime.RawMaxY.ToString(CultureInfo.InvariantCulture));
             text.AppendLine("pressuremin=" + runtime.PressureMin.ToString(CultureInfo.InvariantCulture));
             text.AppendLine("pressuremax=" + runtime.PressureMax.ToString(CultureInfo.InvariantCulture));
             text.AppendLine("pressuregamma=" + runtime.PressureGamma.ToString("0.###", CultureInfo.InvariantCulture));
